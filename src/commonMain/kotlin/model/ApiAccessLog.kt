@@ -28,5 +28,5 @@ data class ApiAccessLog(
     val resultCode: Int = 0,
     val resultMsg: String? = null,
     @CreatedAt
-    val createdAt: String? = null
+    val createdAt: Long? = null
 )

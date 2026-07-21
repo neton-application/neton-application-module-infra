@@ -10,5 +10,5 @@ data class ApiAccessLogVO(
     val requestUrl: String? = null,
     val duration: Long = 0,
     val resultCode: Int = 0,
-    val createdAt: String? = null
+    val createdAt: Long? = null
 )

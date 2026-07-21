@@ -10,5 +10,5 @@ data class ApiErrorLogVO(
     val requestUrl: String? = null,
     val exceptionName: String? = null,
     val processStatus: Int = 0,
-    val createdAt: String? = null
+    val createdAt: Long? = null
 )

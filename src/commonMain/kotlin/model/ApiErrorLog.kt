@@ -25,5 +25,5 @@ data class ApiErrorLog(
     val processUserId: Long? = null,
     val processTime: Long? = null,
     @CreatedAt
-    val createdAt: String? = null
+    val createdAt: Long? = null
 )

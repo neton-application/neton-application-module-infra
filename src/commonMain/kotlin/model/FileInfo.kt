@@ -37,5 +37,5 @@ data class FileInfo(
     /** 1=active, 0=orphaned/deleted。 */
     val status: Int = 1,
     @CreatedAt
-    val createdAt: String? = null
+    val createdAt: Long? = null
 )

@@ -14,7 +14,7 @@ data class FileInfoVO(
     val url: String? = null,
     val mimeType: String? = null,
     val size: Long = 0,
-    val createdAt: String? = null
+    val createdAt: Long? = null
 )
 
 @Serializable
