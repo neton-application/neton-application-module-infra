@@ -47,6 +47,26 @@ class ConfigLogic(
         return ConfigTable.get(id)
     }
 
+    /**
+     * 按定义注册表 upsert 缺失配置项（新增枚举项自动入库；已存在的不覆盖值，保留运营改动）。
+     * 返回新增条数。
+     */
+    suspend fun syncDefaults(defs: List<model.ConfigDefinition>): Int {
+        var added = 0
+        for (d in defs) {
+            val existing = ConfigTable.oneWhere { Config::configKey eq d.key }
+            if (existing == null) {
+                ConfigTable.insert(Config(
+                    category = d.category, configKey = d.key, value = d.default,
+                    type = d.type, name = d.name, remark = d.description,
+                ))
+                added++
+            }
+        }
+        log.info("Config syncDefaults added $added of ${defs.size}")
+        return added
+    }
+
     suspend fun getByKey(configKey: String): Config? {
         // Check Redis cache first
         val cached = redis?.getValue("$CACHE_PREFIX$configKey")

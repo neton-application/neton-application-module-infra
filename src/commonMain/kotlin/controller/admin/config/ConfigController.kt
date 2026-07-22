@@ -5,6 +5,8 @@ import controller.admin.config.dto.CreateConfigRequest
 import controller.admin.config.dto.UpdateConfigRequest
 import logic.ConfigLogic
 import model.Config
+import model.ConfigDefinition
+import model.ConfigDefinitionRegistry
 import neton.core.annotations.Controller
 import neton.core.annotations.Get
 import neton.core.annotations.Post
@@ -20,8 +22,20 @@ import neton.logging.Logger
 @Controller("/infra/config")
 class ConfigController(
     private val log: Logger,
+    private val definitionRegistry: ConfigDefinitionRegistry,
     private val configLogic: ConfigLogic = ConfigLogic(log)
 ) {
+
+    /** 已注册的配置定义（后台新建配置时自动补全 key/名称/默认值）。可按 category 过滤。 */
+    @Get("/definitions")
+    @Permission("infra:config:query")
+    suspend fun definitions(@Query category: String? = null): List<ConfigDefinition> =
+        definitionRegistry.definitions.filter { category.isNullOrBlank() || it.category == category }
+
+    /** 按注册定义 upsert 缺失配置项入库（新增枚举项一键落库，不覆盖已存在值）。返回新增数。 */
+    @Post("/sync-definitions")
+    @Permission("infra:config:create")
+    suspend fun syncDefinitions(): Int = configLogic.syncDefaults(definitionRegistry.definitions)
 
     @Post("/create")
     @Permission("infra:config:create")
