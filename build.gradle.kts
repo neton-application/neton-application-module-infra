@@ -13,7 +13,10 @@ repositories {
 
 kotlin {
     listOf(macosArm64(), linuxX64(), linuxArm64(), mingwX64()).forEach { target ->
-        val coreInterop = rootProject.file("../neton/neton-core/build/nativeInterop/${target.name}").absolutePath
+        // 锚定到**本模块自身目录**：rootProject 在复合构建里会变成宿主工程
+        // （privchat-application），那时 ../neton 会指向不存在的路径，
+        // 链接期报 `library 'env' not found`。
+        val coreInterop = project.file("../neton/neton-core/build/nativeInterop/${target.name}").absolutePath
         target.binaries.forEach { binary ->
             binary.linkerOpts.add("-L$coreInterop")
             binary.linkerOpts.add("-lenv")
