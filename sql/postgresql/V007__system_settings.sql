@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
     id          BIGSERIAL PRIMARY KEY,
     -- 归属模块，如 member / cs / payment
     category    VARCHAR(64)  NOT NULL,
-    config_key  VARCHAR(128) NOT NULL,
+    setting_key VARCHAR(128) NOT NULL,
     -- 一律存字符串，真实类型由代码里的 SettingDefinition 决定；
     -- 数据库不做类型分裂，免得为一个布尔值再开一列
     value       TEXT         NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 
 -- key 全局唯一：两处写同一个 key 会互相覆盖，运行期只表现为「改了没生效」，极难定位
-CREATE UNIQUE INDEX IF NOT EXISTS uk_system_settings_key ON system_settings (config_key);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_system_settings_key ON system_settings (setting_key);
 CREATE INDEX IF NOT EXISTS idx_system_settings_category ON system_settings (category);
 
 -- infra_configs 生产无有效数据（唯一使用方是尚未上线的签到周期配置，2026-08-07 确认），
