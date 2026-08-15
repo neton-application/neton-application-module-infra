@@ -1,6 +1,8 @@
 package job
 
 import event.DomainEventDispatcher
+import event.DomainEventSettings
+import logic.DomainEventOpsLogic
 import neton.core.component.NetonContext
 import neton.core.event.DomainEventBus
 import neton.core.event.DomainEventCodec
@@ -39,10 +41,12 @@ class DomainEventDispatchJob(
         // 编解码由应用层提供；未提供说明本部署没有使用持久化投递
         val codec = ctx.getOrNull(DomainEventCodec::class) ?: return
 
+        val settings = DomainEventSettings.load()
         val dispatcher = DomainEventDispatcher(
             store = store,
             bus = bus,
             codec = codec,
+            config = settings.dispatch,
             onError = { failure ->
                 if (failure.permanent) {
                     log.error("event.dispatch.permanent_failure id=${failure.id} listener=${failure.listenerId} reason=${failure.reason}")
@@ -53,5 +57,26 @@ class DomainEventDispatchJob(
         )
         val delivered = dispatcher.dispatchOnce(Clock.System.now().toEpochMilliseconds())
         if (delivered > 0) log.info("event.dispatch delivered=$delivered")
+
+        // 积压告警：这是 outbox 唯一主动发出的健康信号。终态失败、待投递堆积、
+        // 最老记录年龄过大，都说明有人该看一眼——而没有这条，他们只会在客诉里发现。
+        val ops = ctx.getOrNull(DomainEventOpsLogic::class) ?: return
+        val stats = ops.stats()
+        val oldestAge = stats.oldestPendingAgeMillis ?: 0L
+        val unhealthy = stats.failed > 0 ||
+            stats.pending > settings.backlogWarnPending ||
+            oldestAge > settings.backlogWarnAgeMillis
+        if (unhealthy) {
+            log.warn(
+                "event.backlog",
+                mapOf(
+                    "pending" to stats.pending,
+                    "delivering" to stats.delivering,
+                    "failed" to stats.failed,
+                    "oldestPendingAgeMs" to stats.oldestPendingAgeMillis,
+                    "oldestDeliveringAgeMs" to stats.oldestDeliveringAgeMillis,
+                ),
+            )
+        }
     }
 }

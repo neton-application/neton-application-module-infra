@@ -6,6 +6,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import neton.core.config.getEnv
 import neton.core.event.PendingEventRecord
+import logic.DomainEventOpsLogic
+import neton.core.http.BadRequestException
+import neton.logging.Fields
+import neton.logging.Logger
 import neton.core.module.MigrationDialect
 import neton.database.adapter.sqlx.SqlxDatabase
 import neton.database.api.DbContext
@@ -251,5 +255,112 @@ class PostgresDomainEventStoreDbTest {
         val again = s.claimDue(now = 5_000, limit = 10, staleBefore = 0)
         assertEquals(1, again.size)
         assertEquals(1, again[0].attempts, "attempts 已累加")
+    }
+
+    // ---- 运维面：DomainEventOpsLogic 在真实表上的行为 ----
+
+    private object QuietLogger : Logger {
+        override fun trace(msg: String, fields: Fields) {}
+        override fun debug(msg: String, fields: Fields) {}
+        override fun info(msg: String, fields: Fields) {}
+        override fun warn(msg: String, fields: Fields, cause: Throwable?) {}
+        override fun error(msg: String, fields: Fields, cause: Throwable?) {}
+    }
+
+    private fun ops(db: DbContext) = DomainEventOpsLogic(QuietLogger, db)
+
+    @Test
+    fun statsCountEveryStatusAndAges() = withMigratedDatabase { db ->
+        val s = store(db, clock = { 1_000L })
+        db.transaction { repeat(3) { s.append(pending(it)) } }              // 3 pending
+        val claimed = s.claimDue(now = 2_000, limit = 1, staleBefore = 0)   // 1 delivering
+        s.markDelivered(claimed[0].id, claimed[0].claimToken, 2_100)        // → delivered
+        val c2 = s.claimDue(now = 3_000, limit = 1, staleBefore = 0)
+        s.markFailed(c2[0].id, c2[0].claimToken, 3_100, null, "poison")     // → failed
+        val c3 = s.claimDue(now = 4_000, limit = 1, staleBefore = 0)        // delivering, left in flight
+        db.transaction { s.append(pending(9)) }                              // 1 pending, created_at=1000
+
+        val st = ops(db).stats()
+        assertEquals(1L, st.pending)
+        assertEquals(1L, st.delivering)
+        assertEquals(1L, st.delivered)
+        assertEquals(1L, st.failed)
+        assertEquals(0L, st.discarded)
+        assertTrue((st.oldestPendingAgeMillis ?: -1) >= 0, "有待投递就应有年龄")
+        assertTrue((st.oldestDeliveringAgeMillis ?: -1) >= 0, "有投递中就应有年龄")
+    }
+
+    @Test
+    fun requeueOnlyFromTerminalFailure() = withMigratedDatabase { db ->
+        val s = store(db)
+        db.transaction { s.append(pending(1)); s.append(pending(2)) }
+        val c = s.claimDue(now = 1_000, limit = 1, staleBefore = 0).single()
+        s.markFailed(c.id, c.claimToken, 1_100, null, "poison")            // → 3
+        assertEquals(3, db.statusOf(c.id))
+
+        // 待投递的（第二条，status 0）不允许重投
+        val other = db.fetchAll("SELECT id FROM infra_domain_events WHERE status = 0 AND id <> :id", mapOf("id" to c.id)).first().longOrNull("id")!!
+        assertFailsWith<BadRequestException> { ops(db).requeue(other) }
+
+        val r = ops(db).requeue(c.id)
+        assertEquals(0, r.status)
+        assertEquals(0, r.attempts, "重投要归零重试预算")
+        assertEquals(null, r.claimToken, "旧令牌不能复活")
+        // 重投后能被再次领取。ops 用墙钟写 next_attempt_at，所以领取也要用墙钟
+        val wall = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        assertEquals(1, s.claimDue(now = wall, limit = 10, staleBefore = 0).count { it.id == c.id })
+    }
+
+    @Test
+    fun discardFromPendingOrFailedButNotDelivering() = withMigratedDatabase { db ->
+        val s = store(db)
+        db.transaction { repeat(3) { s.append(pending(it)) } }
+        val ids = db.fetchAll("SELECT id FROM infra_domain_events ORDER BY id").map { it.longOrNull("id")!! }
+
+        // pending → discard OK
+        val d1 = ops(db).discard(ids[0], "not needed")
+        assertEquals(4, d1.status)
+        assertEquals("not needed", d1.lastError)
+
+        // failed → discard OK
+        val c = s.claimDue(now = 1_000, limit = 1, staleBefore = 0).single()
+        s.markFailed(c.id, c.claimToken, 1_100, null, "poison")
+        assertEquals(4, ops(db).discard(c.id, null).status)
+
+        // delivering → refused
+        val c2 = s.claimDue(now = 2_000, limit = 1, staleBefore = 0).single()
+        assertEquals(1, db.statusOf(c2.id))
+        assertFailsWith<BadRequestException> { ops(db).discard(c2.id, "x") }
+
+        // 已丢弃的不会被领取
+        assertTrue(s.claimDue(now = 100_000, limit = 10, staleBefore = 99_000).none { it.id == ids[0] })
+    }
+
+    @Test
+    fun cleanupRemovesOnlyDeliveredAndDiscardedPastRetention() = withMigratedDatabase { db ->
+        val s = store(db, clock = { 1_000L })
+        db.transaction { repeat(4) { s.append(pending(it)) } }
+        val ids = db.fetchAll("SELECT id FROM infra_domain_events ORDER BY id").map { it.longOrNull("id")!! }
+
+        // ids[0] → delivered (updated_at 2000)
+        val c0 = s.claimDue(now = 2_000, limit = 1, staleBefore = 0).single()
+        s.markDelivered(c0.id, c0.claimToken, 2_000)
+        // ids[1] → discarded via ops (updated_at = wall clock; 用 SQL 拨回去便于测试)
+        ops(db).discard(ids[1], null)
+        db.execute("UPDATE infra_domain_events SET updated_at = 2000 WHERE id = :id", mapOf("id" to ids[1]))
+        // ids[2] → failed (must survive cleanup)
+        val c2 = s.claimDue(now = 3_000, limit = 1, staleBefore = 0).single()
+        s.markFailed(c2.id, c2.claimToken, 3_000, null, "poison")
+        // ids[3] stays pending (must survive)
+
+        // ops.now() 是墙钟；retention 设得很大，让 cutoff 落在 2000 之后但仍早于"现在"
+        val nowWall = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val retention = nowWall - 2_500      // cutoff = 2500
+        val deleted = ops(db).cleanup(retentionMillis = retention, batchSize = 1)
+
+        assertEquals(2L, deleted, "只删已投递和已丢弃")
+        val remaining = db.fetchAll("SELECT id, status FROM infra_domain_events ORDER BY id")
+            .map { it.longOrNull("id")!! to it.intOrNull("status")!! }
+        assertEquals(listOf(ids[2] to 3, ids[3] to 0), remaining)
     }
 }
