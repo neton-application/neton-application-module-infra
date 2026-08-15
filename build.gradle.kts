@@ -90,6 +90,35 @@ tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64|MingwX64)"
 }
 
 // ============================================================
+// Outbox store contract against a real PostgreSQL. Kept out of the
+// regular unit test task; requires EVENT_DB_URI (role with CREATEDB).
+//
+//   ./gradlew :module-infra:macosArm64Test
+//   EVENT_DB_URI=... ./gradlew :module-infra:postgresContractTest
+// ============================================================
+val postgresContractClass = "event.PostgresDomainEventStoreDbTest"
+
+tasks.named<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>("macosArm64Test") {
+    filter.excludeTestsMatching(postgresContractClass)
+}
+
+// Runs the same test binary with kotlin-test's own filter.
+tasks.register<Exec>("postgresContractTest") {
+    group = "verification"
+    description = "Runs the outbox store contract against a real PostgreSQL (EVENT_DB_URI required)."
+    dependsOn("linkDebugTestMacosArm64")
+    val binary = layout.buildDirectory.file("bin/macosArm64/debugTest/test.kexe")
+    executable(binary.get().asFile.absolutePath)
+    args("--ktest_filter=$postgresContractClass.*", "--ktest_logger=TEAMCITY")
+    doFirst {
+        check(!System.getenv("EVENT_DB_URI").isNullOrBlank()) {
+            "postgresContractTest requires EVENT_DB_URI (a PostgreSQL URI whose role has CREATEDB). " +
+                "This task is the RETRYABLE release gate and does not run without a real database."
+        }
+    }
+}
+
+// ============================================================
 // Embed SQL migration resources into binary (no runtime file IO).
 // ============================================================
 extra["neton.migration.moduleId"] = "infra"

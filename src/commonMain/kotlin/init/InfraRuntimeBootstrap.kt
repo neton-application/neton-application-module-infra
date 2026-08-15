@@ -24,7 +24,7 @@ object InfraRuntimeBootstrap {
         // 持久化事件投递的落地实现（框架只定义端口，载体由应用层选）。表见 V008/V009。
         ctx.bindIfAbsent(
             neton.core.event.DomainEventStore::class,
-            event.DatabaseDomainEventStore(ctx.get(neton.database.api.DbContext::class)),
+            event.PostgresDomainEventStore(ctx.get(neton.database.api.DbContext::class)),
         )
 
         // 把持久化设施装进总线。总线由框架在启动最早期绑定（发布方那时已持有它），

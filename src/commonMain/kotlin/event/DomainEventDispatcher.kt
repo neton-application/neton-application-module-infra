@@ -4,6 +4,8 @@ import neton.core.event.DomainEvent
 import neton.core.event.DomainEventBus
 import neton.core.event.DomainEventListener
 import neton.core.event.DomainEventStore
+import neton.core.event.StoredEventRecord
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 落库事件的投递器：领取到期记录 → 交回对应监听者 → 成功标记完成、失败按退避重排。
@@ -40,31 +42,63 @@ class DomainEventDispatcher(
 
         for (record in batch) {
             val listener = bus.listenerOf(record.listenerId)
-            val event = codec.decode(record.eventType, record.payload)
 
-            // 监听者下线或载荷无法还原：重试多少次都一样，直接转终态，
-            // 留在库里等人处理，而不是无限占用后续批次。
-            if (listener == null || event == null) {
-                val reason = if (listener == null) "监听者不存在: ${record.listenerId}"
-                             else "载荷无法还原: ${record.eventType}"
-                store.markFailed(record.id, now, null, reason)
-                onError(StoredEventFailure(record.id, record.listenerId, reason, permanent = true))
+            // decode 放在 try 里：JSON 解码遇到坏数据是**抛异常**而不是返回 null，
+            // 放在外面的话一条毒消息会让整批中断，其余记录不处理，超时后毒消息还会重现、再中断。
+            // 解码异常与"返回 null"同等对待——重试多少次都解不出来，直接终态。
+            val event: DomainEvent? = try {
+                codec.decode(record.eventType, record.payload)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                settlePermanently(record, now, "载荷解码异常: ${e.message ?: e::class.simpleName}")
+                continue
+            }
+
+            // 这三种情况重试多少次结果都一样，直接转终态，留在库里等人处理，
+            // 而不是无限占用后续批次。第三种（解出来的对象类型不对）不能交给监听者：
+            // 那会在 onEvent 里以 ClassCastException 的形式失败，被当成普通失败反复重试。
+            val permanentReason = when {
+                listener == null -> "监听者不存在: ${record.listenerId}"
+                event == null -> "载荷无法还原: ${record.eventType}"
+                !listener.eventType.isInstance(event) ->
+                    "载荷类型不匹配: 监听者 ${record.listenerId} 订阅 ${listener.eventType.simpleName}，" +
+                        "解出的是 ${event::class.simpleName}"
+                else -> null
+            }
+            if (permanentReason != null) {
+                settlePermanently(record, now, permanentReason)
                 continue
             }
 
             try {
-                (listener as DomainEventListener<DomainEvent>).onEvent(event)
-                store.markDelivered(record.id, now)
-                delivered++
+                (listener as DomainEventListener<DomainEvent>).onEvent(event!!)
+                // 令牌不匹配返回 false：本记录已被别的领取者接管，本次投递结果作废，
+                // 不计入 delivered。监听者已经执行过一次——这就是"至少一次"的含义。
+                if (store.markDelivered(record.id, record.claimToken, now)) delivered++
+            } catch (e: CancellationException) {
+                // 关闭 / 取消不是投递失败：不能记成错误、不能吞掉信号。
+                // 记录留在"投递中"，由可见性超时回收后重投。
+                throw e
             } catch (e: Throwable) {
                 val attempts = record.attempts + 1
                 val next = if (attempts >= config.maxAttempts) null else now + backoffMillis(attempts)
                 val reason = e.message ?: e::class.simpleName ?: "未知错误"
-                store.markFailed(record.id, now, next, reason)
-                onError(StoredEventFailure(record.id, record.listenerId, reason, permanent = next == null))
+                // 落定失败（令牌已换）说明所有权已丢，这条失败已经不归本 worker 管，
+                // 不能再上报——那会制造一条并不存在的重试/终态告警。
+                if (store.markFailed(record.id, record.claimToken, now, next, reason)) {
+                    onError(StoredEventFailure(record.id, record.listenerId, reason, permanent = next == null))
+                }
             }
         }
         return delivered
+    }
+
+    /** 转终态并上报；令牌已换（返回 false）则静默——所有权已不在本 worker。 */
+    private suspend fun settlePermanently(record: StoredEventRecord, now: Long, reason: String) {
+        if (store.markFailed(record.id, record.claimToken, now, null, reason)) {
+            onError(StoredEventFailure(record.id, record.listenerId, reason, permanent = true))
+        }
     }
 
     /**
