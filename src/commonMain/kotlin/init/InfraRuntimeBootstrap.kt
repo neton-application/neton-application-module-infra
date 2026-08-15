@@ -21,6 +21,21 @@ object InfraRuntimeBootstrap {
         // 应用唯一用户态文件入口（spec MODULE_MEMBER_PROFILE_SPEC §4.2）。
         // storage 由 storage { } DSL 在 Main.kt 装配; policyRegistry inline 构造 → 非 @Logic。
         val storage = ctx.get(StorageOperator::class)
+        // 持久化事件投递的落地实现（框架只定义端口，载体由应用层选）。表见 V008/V009。
+        ctx.bindIfAbsent(
+            neton.core.event.DomainEventStore::class,
+            event.DatabaseDomainEventStore(ctx.get(neton.database.api.DbContext::class)),
+        )
+
+        // 把持久化设施装进总线。总线由框架在启动最早期绑定（发布方那时已持有它），
+        // 数据库要到这里才拿得到，所以分两步。编解码由应用层提供，没有就说明本部署不用
+        // 落库投递；真有监听者声明了 RETRYABLE 却没编解码，框架的 seal() 会在启动期报错。
+        val eventCodec = ctx.getOrNull(neton.core.event.DomainEventCodec::class)
+        if (eventCodec != null) {
+            ctx.get(neton.core.event.DomainEventBus::class)
+                .attachStore(ctx.get(neton.core.event.DomainEventStore::class), eventCodec)
+        }
+
         val policyRegistry = FileBusinessPolicyRegistry.default()
         ctx.bind(FileBusinessPolicyRegistry::class, policyRegistry)
         // 文件公网前缀:conf [infra] file_public_base_url(如 https://h5.fflunp.cn/api),
