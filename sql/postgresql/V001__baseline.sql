@@ -419,7 +419,9 @@ WITH lvl1 AS (
 ),
 lvl2 AS (
     INSERT INTO system_menus (name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at)
-    SELECT v.name, v.permission, v.type, p.id, v.path, v.component, v.icon, v.sort, v.status, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint
+    SELECT v.name, v.permission, v.type,
+           (SELECT p.id FROM lvl1 p WHERE p.name = v.parent_name),
+           v.path, v.component, v.icon, v.sort, v.status, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint
     FROM (VALUES
         ('用户管理', 'system:user:query', 2, '系统管理', 'user', 'system/user/index', 'ant-design:user-outlined', 1, 1),
         ('角色管理', 'system:role:query', 2, '系统管理', 'role', 'system/role/index', 'ant-design:team-outlined', 2, 1),
@@ -443,12 +445,13 @@ lvl2 AS (
         ('API错误日志', 'infra:api-error-log:query', 2, '基础设施', 'api-error-log', 'infra/apiErrorLog/index', 'ant-design:bug-outlined', 6, 1),
         ('Redis监控', 'infra:redis:query', 2, '基础设施', 'redis', 'infra/redis/index', 'ant-design:database-outlined', 7, 1)
     ) AS v(name, permission, type, parent_name, path, component, icon, sort, status)
-    JOIN lvl1 p ON p.name = v.parent_name
     RETURNING id, name
 ),
 lvl3 AS (
     INSERT INTO system_menus (name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at)
-    SELECT v.name, v.permission, v.type, p.id, v.path, v.component, v.icon, v.sort, v.status, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint
+    SELECT v.name, v.permission, v.type,
+           (SELECT p.id FROM lvl2 p WHERE p.name = v.parent_name),
+           v.path, v.component, v.icon, v.sort, v.status, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint
     FROM (VALUES
         ('用户新增', 'system:user:create', 3, '用户管理', '', NULL, '', 2, 1),
         ('用户修改', 'system:user:update', 3, '用户管理', '', NULL, '', 3, 1),
@@ -503,7 +506,6 @@ lvl3 AS (
         ('任务删除', 'infra:job:delete', 3, '定时任务', '', NULL, '', 4, 1),
         ('任务触发', 'infra:job:trigger', 3, '定时任务', '', NULL, '', 5, 1)
     ) AS v(name, permission, type, parent_name, path, component, icon, sort, status)
-    JOIN lvl2 p ON p.name = v.parent_name
     RETURNING id, name
 ),
 inserted AS (
@@ -566,6 +568,7 @@ JOIN inserted m ON m.name IN (
 )
 WHERE r.code IN ('super_admin')
 ON CONFLICT DO NOTHING;
+
 
 
 
