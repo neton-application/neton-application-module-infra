@@ -394,66 +394,179 @@ INSERT INTO system_users (id, username, password_hash, nickname, status, created
 
 INSERT INTO system_roles (id, code, name, description, sort, status, created_at, updated_at) VALUES (1, 'super_admin', '超级管理员', '拥有所有权限', 0, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO system_user_roles (id, user_id, role_id, created_at) VALUES (1, 1, 1, 0) ON CONFLICT (id) DO NOTHING;
+INSERT INTO system_user_roles (id, user_id, role_id, created_at) VALUES (1, 1, 1, 0) ON CONFLICT (id) DO NOTHING;-- ── 后台菜单 ──────────────────────────────────────────────────────────
+--
+-- 🔴 **不写死菜单 id**：id 由 system_menus 的序列在安装时分配。
+--
+-- 以前每个模块把 id 硬编码在 SQL 里，模块之间就得就编号达成一致，而唯一的
+-- 保护是 `ON CONFLICT (id) DO NOTHING`——撞号不会报错，只会**静默**丢菜单。
+-- 实测后果：gateway 和 privchat 撞了 700-704，于是「令牌管理」「定价修改」这些
+-- AI 网关的按钮被挂到了「用户管理」「群组管理」底下，而没有任何地方报错。
+--
+-- 现在父子关系在语句内部用**模块内唯一的菜单名**连接（同一模块内不允许重名），
+-- 跨模块不再共享任何编号，撞号从结构上不可能发生。
+--
+-- 加菜单：往对应层级的 VALUES 里加一行即可，不需要挑号。
+-- 改菜单：后续迁移按 permission 定位；若该 permission 在本模块内不唯一，
+--         用 name 加父节点定位。
 
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1, '系统管理', '', 1, 0, '/system', NULL, 'ant-design:setting-outlined', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2, '基础设施', '', 1, 0, '/infra', NULL, 'ant-design:tool-outlined', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (100, '用户管理', 'system:user:list', 2, 1, 'user', 'system/user/index', 'ant-design:user-outlined', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (101, '角色管理', 'system:role:list', 2, 1, 'role', 'system/role/index', 'ant-design:team-outlined', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (102, '菜单管理', 'system:menu:list', 2, 1, 'menu', 'system/menu/index', 'ant-design:menu-outlined', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (103, '部门管理', 'system:dept:list', 2, 1, 'dept', 'system/dept/index', 'ant-design:apartment-outlined', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (104, '岗位管理', 'system:post:list', 2, 1, 'post', 'system/post/index', 'ant-design:idcard-outlined', 5, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (105, '字典管理', 'system:dict:list', 2, 1, 'dict', 'system/dict/index', 'ant-design:book-outlined', 6, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (106, '通知公告', 'system:notice:list', 2, 1, 'notice', 'system/notice/index', 'ant-design:notification-outlined', 7, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (107, '操作日志', 'system:operate-log:page', 2, 1, 'operate-log', 'system/operatelog/index', 'ant-design:file-text-outlined', 8, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (108, '登录日志', 'system:login-log:page', 2, 1, 'login-log', 'system/loginlog/index', 'ant-design:login-outlined', 9, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (109, '消息中心', '', 1, 1, 'message', NULL, 'ant-design:message-outlined', 10, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (110, '站内信', '', 1, 1, 'notify', NULL, 'ant-design:bell-outlined', 11, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (111, '短信管理', '', 1, 1, 'sms', NULL, 'ant-design:mobile-outlined', 12, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (112, '邮件管理', '', 1, 1, 'mail', NULL, 'ant-design:mail-outlined', 13, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (113, '社交用户', 'system:social-user:query', 2, 1, 'social-user', 'system/social/user/index', 'ant-design:share-alt-outlined', 14, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1000, '用户查询', 'system:user:query', 3, 100, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1001, '用户新增', 'system:user:create', 3, 100, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1002, '用户修改', 'system:user:update', 3, 100, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1003, '用户删除', 'system:user:delete', 3, 100, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1004, '重置密码', 'system:user:update-password', 3, 100, '', NULL, '', 5, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1010, '角色查询', 'system:role:query', 3, 101, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1011, '角色新增', 'system:role:create', 3, 101, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1012, '角色修改', 'system:role:update', 3, 101, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1013, '角色删除', 'system:role:delete', 3, 101, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1014, '权限查询', 'system:permission:query', 3, 101, '', NULL, '', 5, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1015, '权限分配', 'system:permission:assign', 3, 101, '', NULL, '', 6, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1020, '菜单查询', 'system:menu:query', 3, 102, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1021, '菜单新增', 'system:menu:create', 3, 102, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1022, '菜单修改', 'system:menu:update', 3, 102, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1023, '菜单删除', 'system:menu:delete', 3, 102, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1030, '部门查询', 'system:dept:query', 3, 103, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1031, '部门新增', 'system:dept:create', 3, 103, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1032, '部门修改', 'system:dept:update', 3, 103, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1033, '部门删除', 'system:dept:delete', 3, 103, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1040, '岗位查询', 'system:post:query', 3, 104, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1041, '岗位新增', 'system:post:create', 3, 104, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1042, '岗位修改', 'system:post:update', 3, 104, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1043, '岗位删除', 'system:post:delete', 3, 104, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1050, '字典查询', 'system:dict:query', 3, 105, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1051, '字典新增', 'system:dict:create', 3, 105, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1052, '字典修改', 'system:dict:update', 3, 105, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1053, '字典删除', 'system:dict:delete', 3, 105, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1060, '公告查询', 'system:notice:query', 3, 106, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1061, '公告新增', 'system:notice:create', 3, 106, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1062, '公告修改', 'system:notice:update', 3, 106, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1063, '公告删除', 'system:notice:delete', 3, 106, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1090, '消息渠道', 'system:message-channel:query', 2, 109, 'message-channel', 'system/sms/channel/index', '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1091, '消息模板', 'system:message-template:query', 2, 109, 'message-template', 'system/sms/template/index', '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1092, '消息记录', 'system:message-log:query', 2, 109, 'message-log', 'system/sms/log/index', '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1100, '通知模板', 'system:notify-template:query', 2, 110, 'notify-template', 'system/notify/template/index', '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1101, '通知消息', 'system:notify-message:query', 2, 110, 'notify-message', 'system/notify/message/index', '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1110, '短信渠道', 'system:sms-channel:query', 2, 111, 'sms-channel', 'system/sms/channel/index', '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1111, '短信模板', 'system:sms-template:query', 2, 111, 'sms-template', 'system/sms/template/index', '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1112, '短信日志', 'system:sms-log:query', 2, 111, 'sms-log', 'system/sms/log/index', '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1120, '邮箱账号', 'system:mail-account:query', 2, 112, 'mail-account', 'system/mail/account/index', '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1121, '邮件模板', 'system:mail-template:query', 2, 112, 'mail-template', 'system/mail/template/index', '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (1122, '邮件记录', 'system:mail-log:query', 2, 112, 'mail-log', 'system/mail/log/index', '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
+WITH lvl1 AS (
+    INSERT INTO system_menus (name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at)
+    VALUES
+        ('系统管理', '', 1, 0, '/system', NULL, 'ant-design:setting-outlined', 1, 1, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint),
+        ('基础设施', '', 1, 0, '/infra', NULL, 'ant-design:tool-outlined', 2, 1, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint)
+    RETURNING id, name
+),
+lvl2 AS (
+    INSERT INTO system_menus (name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at)
+    SELECT v.name, v.permission, v.type, p.id, v.path, v.component, v.icon, v.sort, v.status, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint
+    FROM (VALUES
+        ('用户管理', 'system:user:query', 2, '系统管理', 'user', 'system/user/index', 'ant-design:user-outlined', 1, 1),
+        ('角色管理', 'system:role:query', 2, '系统管理', 'role', 'system/role/index', 'ant-design:team-outlined', 2, 1),
+        ('菜单管理', 'system:menu:query', 2, '系统管理', 'menu', 'system/menu/index', 'ant-design:menu-outlined', 3, 1),
+        ('部门管理', 'system:dept:query', 2, '系统管理', 'dept', 'system/dept/index', 'ant-design:apartment-outlined', 4, 1),
+        ('岗位管理', 'system:post:query', 2, '系统管理', 'post', 'system/post/index', 'ant-design:idcard-outlined', 5, 1),
+        ('字典管理', 'system:dict:query', 2, '系统管理', 'dict', 'system/dict/index', 'ant-design:book-outlined', 6, 1),
+        ('通知公告', 'system:notice:query', 2, '系统管理', 'notice', 'system/notice/index', 'ant-design:notification-outlined', 7, 1),
+        ('操作日志', 'system:operate-log:query', 2, '系统管理', 'operate-log', 'system/operatelog/index', 'ant-design:file-text-outlined', 8, 1),
+        ('登录日志', 'system:login-log:query', 2, '系统管理', 'login-log', 'system/loginlog/index', 'ant-design:login-outlined', 9, 1),
+        ('消息中心', '', 1, '系统管理', 'message', NULL, 'ant-design:message-outlined', 10, 1),
+        ('站内信', '', 1, '系统管理', 'notify', NULL, 'ant-design:bell-outlined', 11, 1),
+        ('短信管理', '', 1, '系统管理', 'sms', NULL, 'ant-design:mobile-outlined', 12, 1),
+        ('邮件管理', '', 1, '系统管理', 'mail', NULL, 'ant-design:mail-outlined', 13, 1),
+        ('社交用户', 'system:social-user:query', 2, '系统管理', 'social-user', 'system/social/user/index', 'ant-design:share-alt-outlined', 14, 1),
+        ('系统设置', 'system:setting:query', 2, '系统管理', 'setting', 'system/setting/index', 'ant-design:setting-outlined', 1, 1),
+        ('文件管理', 'infra:file:query', 2, '基础设施', 'file', 'infra/file/index', 'ant-design:file-outlined', 2, 1),
+        ('文件配置', 'infra:file-config:query', 2, '基础设施', 'file-config', 'infra/fileConfig/index', 'ant-design:folder-open-outlined', 3, 1),
+        ('定时任务', 'infra:job:query', 2, '基础设施', 'job', 'infra/job/index', 'ant-design:clock-circle-outlined', 4, 1),
+        ('API访问日志', 'infra:api-access-log:query', 2, '基础设施', 'api-access-log', 'infra/apiAccessLog/index', 'ant-design:api-outlined', 5, 1),
+        ('API错误日志', 'infra:api-error-log:query', 2, '基础设施', 'api-error-log', 'infra/apiErrorLog/index', 'ant-design:bug-outlined', 6, 1),
+        ('Redis监控', 'infra:redis:query', 2, '基础设施', 'redis', 'infra/redis/index', 'ant-design:database-outlined', 7, 1)
+    ) AS v(name, permission, type, parent_name, path, component, icon, sort, status)
+    JOIN lvl1 p ON p.name = v.parent_name
+    RETURNING id, name
+),
+lvl3 AS (
+    INSERT INTO system_menus (name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at)
+    SELECT v.name, v.permission, v.type, p.id, v.path, v.component, v.icon, v.sort, v.status, (extract(epoch from now()) * 1000)::bigint, (extract(epoch from now()) * 1000)::bigint
+    FROM (VALUES
+        ('用户新增', 'system:user:create', 3, '用户管理', '', NULL, '', 2, 1),
+        ('用户修改', 'system:user:update', 3, '用户管理', '', NULL, '', 3, 1),
+        ('用户删除', 'system:user:delete', 3, '用户管理', '', NULL, '', 4, 1),
+        ('重置密码', 'system:user:update-password', 3, '用户管理', '', NULL, '', 5, 1),
+        ('角色新增', 'system:role:create', 3, '角色管理', '', NULL, '', 2, 1),
+        ('角色修改', 'system:role:update', 3, '角色管理', '', NULL, '', 3, 1),
+        ('角色删除', 'system:role:delete', 3, '角色管理', '', NULL, '', 4, 1),
+        ('权限查询', 'system:permission:query', 3, '角色管理', '', NULL, '', 5, 1),
+        ('权限分配', 'system:permission:assign', 3, '角色管理', '', NULL, '', 6, 1),
+        ('菜单新增', 'system:menu:create', 3, '菜单管理', '', NULL, '', 2, 1),
+        ('菜单修改', 'system:menu:update', 3, '菜单管理', '', NULL, '', 3, 1),
+        ('菜单删除', 'system:menu:delete', 3, '菜单管理', '', NULL, '', 4, 1),
+        ('部门新增', 'system:dept:create', 3, '部门管理', '', NULL, '', 2, 1),
+        ('部门修改', 'system:dept:update', 3, '部门管理', '', NULL, '', 3, 1),
+        ('部门删除', 'system:dept:delete', 3, '部门管理', '', NULL, '', 4, 1),
+        ('岗位新增', 'system:post:create', 3, '岗位管理', '', NULL, '', 2, 1),
+        ('岗位修改', 'system:post:update', 3, '岗位管理', '', NULL, '', 3, 1),
+        ('岗位删除', 'system:post:delete', 3, '岗位管理', '', NULL, '', 4, 1),
+        ('字典新增', 'system:dict:create', 3, '字典管理', '', NULL, '', 2, 1),
+        ('字典修改', 'system:dict:update', 3, '字典管理', '', NULL, '', 3, 1),
+        ('字典删除', 'system:dict:delete', 3, '字典管理', '', NULL, '', 4, 1),
+        ('公告新增', 'system:notice:create', 3, '通知公告', '', NULL, '', 2, 1),
+        ('公告修改', 'system:notice:update', 3, '通知公告', '', NULL, '', 3, 1),
+        ('公告删除', 'system:notice:delete', 3, '通知公告', '', NULL, '', 4, 1),
+        ('消息渠道', 'system:message-channel:query', 2, '消息中心', 'message-channel', 'system/sms/channel/index', '', 1, 1),
+        ('消息模板', 'system:message-template:query', 2, '消息中心', 'message-template', 'system/sms/template/index', '', 2, 1),
+        ('消息记录', 'system:message-log:query', 2, '消息中心', 'message-log', 'system/sms/log/index', '', 3, 1),
+        ('通知模板', 'system:notify-template:query', 2, '站内信', 'notify-template', 'system/notify/template/index', '', 1, 1),
+        ('通知消息', 'system:notify-message:query', 2, '站内信', 'notify-message', 'system/notify/message/index', '', 2, 1),
+        ('短信渠道', 'system:sms-channel:query', 2, '短信管理', 'sms-channel', 'system/sms/channel/index', '', 1, 1),
+        ('短信模板', 'system:sms-template:query', 2, '短信管理', 'sms-template', 'system/sms/template/index', '', 2, 1),
+        ('短信日志', 'system:sms-log:query', 2, '短信管理', 'sms-log', 'system/sms/log/index', '', 3, 1),
+        ('邮箱账号', 'system:mail-account:query', 2, '邮件管理', 'mail-account', 'system/mail/account/index', '', 1, 1),
+        ('邮件模板', 'system:mail-template:query', 2, '邮件管理', 'mail-template', 'system/mail/template/index', '', 2, 1),
+        ('邮件记录', 'system:mail-log:query', 2, '邮件管理', 'mail-log', 'system/mail/log/index', '', 3, 1),
+        ('配置查询', 'infra:config:query', 3, '系统设置', '', NULL, '', 1, 1),
+        ('配置新增', 'infra:config:create', 3, '系统设置', '', NULL, '', 2, 1),
+        ('配置修改', 'infra:config:update', 3, '系统设置', '', NULL, '', 3, 1),
+        ('配置删除', 'infra:config:delete', 3, '系统设置', '', NULL, '', 4, 1),
+        ('设置修改', 'system:setting:update', 3, '系统设置', '', NULL, NULL, 1, 1),
+        ('文件查询', 'infra:file:query', 3, '文件管理', '', NULL, '', 1, 1),
+        ('文件上传', 'infra:file:upload', 3, '文件管理', '', NULL, '', 2, 1),
+        ('文件删除', 'infra:file:delete', 3, '文件管理', '', NULL, '', 3, 1),
+        ('文件配置查询', 'infra:file-config:query', 3, '文件配置', '', NULL, '', 1, 1),
+        ('文件配置新增', 'infra:file-config:create', 3, '文件配置', '', NULL, '', 2, 1),
+        ('文件配置修改', 'infra:file-config:update', 3, '文件配置', '', NULL, '', 3, 1),
+        ('文件配置删除', 'infra:file-config:delete', 3, '文件配置', '', NULL, '', 4, 1),
+        ('任务查询', 'infra:job:query', 3, '定时任务', '', NULL, '', 1, 1),
+        ('任务新增', 'infra:job:create', 3, '定时任务', '', NULL, '', 2, 1),
+        ('任务修改', 'infra:job:update', 3, '定时任务', '', NULL, '', 3, 1),
+        ('任务删除', 'infra:job:delete', 3, '定时任务', '', NULL, '', 4, 1),
+        ('任务触发', 'infra:job:trigger', 3, '定时任务', '', NULL, '', 5, 1)
+    ) AS v(name, permission, type, parent_name, path, component, icon, sort, status)
+    JOIN lvl2 p ON p.name = v.parent_name
+    RETURNING id, name
+),
+inserted AS (
+        SELECT id, name FROM lvl1
+        UNION ALL SELECT id, name FROM lvl2
+        UNION ALL SELECT id, name FROM lvl3
+)
+INSERT INTO system_role_menus (role_id, menu_id, created_at)
+SELECT r.id, m.id, (extract(epoch from now()) * 1000)::bigint
+FROM system_roles r
+JOIN inserted m ON m.name IN (
+        '公告修改',
+        '公告删除',
+        '公告新增',
+        '字典修改',
+        '字典删除',
+        '字典新增',
+        '字典管理',
+        '岗位修改',
+        '岗位删除',
+        '岗位新增',
+        '岗位管理',
+        '操作日志',
+        '权限分配',
+        '权限查询',
+        '消息模板',
+        '消息渠道',
+        '消息记录',
+        '用户修改',
+        '用户删除',
+        '用户新增',
+        '用户管理',
+        '登录日志',
+        '短信日志',
+        '短信模板',
+        '短信渠道',
+        '社交用户',
+        '系统管理',
+        '系统设置',
+        '菜单修改',
+        '菜单删除',
+        '菜单新增',
+        '菜单管理',
+        '角色修改',
+        '角色删除',
+        '角色新增',
+        '角色管理',
+        '设置修改',
+        '通知公告',
+        '通知模板',
+        '通知消息',
+        '邮件模板',
+        '邮件记录',
+        '邮箱账号',
+        '部门修改',
+        '部门删除',
+        '部门新增',
+        '部门管理',
+        '重置密码'
+)
+WHERE r.code IN ('super_admin')
+ON CONFLICT DO NOTHING;
+
 
 
 INSERT INTO system_dict_types (id, name, type, status, remark, created_at, updated_at) VALUES (1, '用户性别', 'system_user_sex', 1, '用户性别', 0, 0) ON CONFLICT (id) DO NOTHING;
@@ -538,29 +651,6 @@ INSERT INTO system_dict_data (id, dict_type, label, value, sort, status, remark,
 INSERT INTO system_dict_data (id, dict_type, label, value, sort, status, remark, created_at, updated_at) VALUES (58, 'system_notify_template_type', '邮件', '3', 3, 1, '', 0, 0) ON CONFLICT (id) DO NOTHING;
 INSERT INTO system_dict_data (id, dict_type, label, value, sort, status, remark, created_at, updated_at) VALUES (60, 'infra_file_storage', '本地存储', '10', 1, 1, '', 0, 0) ON CONFLICT (id) DO NOTHING;
 INSERT INTO system_dict_data (id, dict_type, label, value, sort, status, remark, created_at, updated_at) VALUES (61, 'infra_file_storage', 'S3存储', '20', 2, 1, '', 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (200, '配置管理', 'infra:config:query', 2, 2, 'config', 'infra/config/index', 'ant-design:setting-outlined', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (201, '文件管理', 'infra:file:query', 2, 2, 'file', 'infra/file/index', 'ant-design:file-outlined', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (202, '文件配置', 'infra:file-config:query', 2, 2, 'file-config', 'infra/fileConfig/index', 'ant-design:folder-open-outlined', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (203, '定时任务', 'infra:job:query', 2, 2, 'job', 'infra/job/index', 'ant-design:clock-circle-outlined', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (204, 'API访问日志', 'infra:api-access-log:query', 2, 2, 'api-access-log', 'infra/apiAccessLog/index', 'ant-design:api-outlined', 5, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (205, 'API错误日志', 'infra:api-error-log:query', 2, 2, 'api-error-log', 'infra/apiErrorLog/index', 'ant-design:bug-outlined', 6, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (206, 'Redis监控', 'infra:redis:query', 2, 2, 'redis', 'infra/redis/index', 'ant-design:database-outlined', 7, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2000, '配置查询', 'infra:config:query', 3, 200, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2001, '配置新增', 'infra:config:create', 3, 200, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2002, '配置修改', 'infra:config:update', 3, 200, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2003, '配置删除', 'infra:config:delete', 3, 200, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2010, '文件查询', 'infra:file:query', 3, 201, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2011, '文件上传', 'infra:file:upload', 3, 201, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2012, '文件删除', 'infra:file:delete', 3, 201, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2020, '文件配置查询', 'infra:file-config:query', 3, 202, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2021, '文件配置新增', 'infra:file-config:create', 3, 202, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2022, '文件配置修改', 'infra:file-config:update', 3, 202, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2023, '文件配置删除', 'infra:file-config:delete', 3, 202, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2030, '任务查询', 'infra:job:query', 3, 203, '', NULL, '', 1, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2031, '任务新增', 'infra:job:create', 3, 203, '', NULL, '', 2, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2032, '任务修改', 'infra:job:update', 3, 203, '', NULL, '', 3, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2033, '任务删除', 'infra:job:delete', 3, 203, '', NULL, '', 4, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
-INSERT INTO system_menus (id, name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at) VALUES (2034, '任务触发', 'infra:job:trigger', 3, 203, '', NULL, '', 5, 1, 0, 0) ON CONFLICT (id) DO NOTHING;
 
 
 -- ─────────────────────────────────────────────────────────────
@@ -626,78 +716,6 @@ CREATE INDEX IF NOT EXISTS idx_infra_files_owner_biz_sha
 
 
 -- ─────────────────────────────────────────────────────────────
--- 原 V006__normalize_system_query_permissions.sql
--- ─────────────────────────────────────────────────────────────
-
--- Normalize system read permissions to resource-level `query` capabilities.
--- HTTP result shapes (page/list/get) are not separate RBAC capabilities.
-
-WITH canonical(id, permission) AS (
-    VALUES
-        (100::bigint, 'system:user:query'),
-        (101::bigint, 'system:role:query'),
-        (102::bigint, 'system:menu:query'),
-        (103::bigint, 'system:dept:query'),
-        (104::bigint, 'system:post:query'),
-        (105::bigint, 'system:dict:query'),
-        (106::bigint, 'system:notice:query'),
-        (107::bigint, 'system:operate-log:query'),
-        (108::bigint, 'system:login-log:query')
-)
-UPDATE system_menus menu
-   SET permission = canonical.permission,
-       updated_at = (extract(epoch from now()) * 1000)::bigint
-  FROM canonical
- WHERE menu.id = canonical.id
-   AND menu.permission IS DISTINCT FROM canonical.permission;
-
--- Query used to be duplicated as a button below each page menu. The page now
--- carries the query capability, so remove only those redundant query buttons.
-DELETE FROM system_role_menus
- WHERE menu_id IN (1000, 1010, 1020, 1030, 1040, 1050, 1060);
-
-DELETE FROM system_menus
- WHERE id IN (1000, 1010, 1020, 1030, 1040, 1050, 1060)
-   AND permission IN (
-       'system:user:query',
-       'system:role:query',
-       'system:menu:query',
-       'system:dept:query',
-       'system:post:query',
-       'system:dict:query',
-       'system:notice:query'
-   );
-
--- Product administrators retain the complete system administration surface.
-INSERT INTO system_role_menus (role_id, menu_id, created_at)
-SELECT
-    role.id,
-    menu.id,
-    (extract(epoch from now()) * 1000)::bigint
-FROM system_roles role
-CROSS JOIN system_menus menu
-WHERE role.code IN ('super_admin', 'admin')
-  AND (
-      menu.id = 1
-      OR menu.permission LIKE 'system:%'
-  )
-  AND NOT EXISTS (
-      SELECT 1
-        FROM system_role_menus existing
-       WHERE existing.role_id = role.id
-         AND existing.menu_id = menu.id
-  )
--- 🔴 定死顺序：见 cs 模块基线里的同类说明。没有 ORDER BY 时 serial 主键每次
--- 分配都不同，结构对拍会一直有假差异。
-ORDER BY role.id, menu.id;
-
-SELECT setval(
-    pg_get_serial_sequence('system_menus', 'id'),
-    (SELECT MAX(id) FROM system_menus)
-);
-
-
--- ─────────────────────────────────────────────────────────────
 -- 原 V007__drop_infra_configs.sql
 -- ─────────────────────────────────────────────────────────────
 
@@ -708,34 +726,6 @@ SELECT setval(
 -- 故不搬数据、不留过渡期双表 —— 空表加死代码的成本比删掉高，
 -- 下一个人得先花时间确认它是不是还在用。
 DROP TABLE IF EXISTS infra_configs;
-
--- 菜单留在 infra 的原因：system_menus 表和 'infra/config/index' 这行都是 infra V001 建的，
--- 而 infra dependsOn system 意味着 system 的迁移先跑 —— 把这几段搬去 system 会在建表前执行。
--- 谁插入的谁清理，顺序上也只有这一种选择。
-
--- 配置管理菜单从「基础设施」移到「系统管理」下。
--- 用 UPDATE 而不是删旧建新：菜单 id 若变化，已授权给角色的 system_role_menus 会失联，
--- 表现为「升级后管理员突然看不到这个菜单」。
-UPDATE system_menus
-SET parent_id = (SELECT id FROM system_menus WHERE path = '/system' AND type = 1 LIMIT 1),
-    component = 'system/setting/index',
-    path = 'setting',
-    name = '系统设置',
-    permission = 'system:setting:query'
-WHERE component = 'infra/config/index';
-
--- 改配置是写操作，与查询分权：运营可以看，不一定该改
-INSERT INTO system_menus (name, permission, type, parent_id, path, component, icon, sort, status, created_at, updated_at)
-SELECT '设置修改', 'system:setting:update', 3,
-       (SELECT id FROM system_menus WHERE component = 'system/setting/index' LIMIT 1),
-       '', NULL, NULL, 1, 1, 0, 0
-WHERE EXISTS (SELECT 1 FROM system_menus WHERE component = 'system/setting/index')
-  AND NOT EXISTS (SELECT 1 FROM system_menus WHERE permission = 'system:setting:update');
-
-INSERT INTO system_role_menus (role_id, menu_id, created_at)
-SELECT 1, id, 0 FROM system_menus
-WHERE permission IN ('system:setting:query', 'system:setting:update')
-  AND NOT EXISTS (SELECT 1 FROM system_role_menus rm WHERE rm.role_id = 1 AND rm.menu_id = system_menus.id);
 
 
 -- ─────────────────────────────────────────────────────────────
