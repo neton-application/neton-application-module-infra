@@ -37,9 +37,10 @@ class FileUploadLogic(
     private val storage: StorageOperator,
     private val policyRegistry: FileBusinessPolicyRegistry,
     /**
-     * 对外可访问的绝对前缀(如 `https://h5.fflunp.cn/api`)。配置后下发的
-     * 文件 URL 为绝对地址——头像等经 <img>/Image 加载,相对路径在
-     * 站点域名 != API 域名的部署形态下无法解析。空则保持相对路径。
+     * 走服务端中转读取时的绝对前缀（如 `https://h5.example.com/api`）。
+     *
+     * 仅用于 `/app/infra/file/get/{fileId}` 这条中转路径；对象存储直读地址由存储源的
+     * `baseUrl` 决定（见 [publicUrlFor]）。
      */
     private val publicBaseUrl: String? = null,
 ) {
@@ -106,7 +107,7 @@ class FileUploadLogic(
         storage.write(storageKey, bytes, WriteOptions())
 
         val fileId = generateFileId()
-        val url = absoluteUrlOf(fileId)
+        val url = publicUrlFor(storageKey, fileId)
         val now = Clock.System.now().toEpochMilliseconds()
 
         val record = FileInfo(
@@ -147,8 +148,21 @@ class FileUploadLogic(
      * - PUBLIC：任意已登录用户可读
      * - PRIVATE：仅 owner 可读
      */
-    /** 配置了 publicBaseUrl 则拼绝对 URL,否则相对(spec §4.2)。 */
-    private fun absoluteUrlOf(fileId: String): String {
+    /**
+     * 下发给客户端的地址（spec MODULE_MEMBER_PROFILE_SPEC §4.2bis）。
+     *
+     * 存储源配了 `baseUrl`（对象存储/CDN）→ **直读地址** = baseUrl + 桶内路径。数据库里
+     * 存的始终是那条相对路径，主机名只在这里拼上：换 CDN、换区域、Weey 与 PrivChat 用
+     * 不同的桶，都不必回头改已有的每一行。
+     *
+     * 没配 `baseUrl`（本地磁盘等没有公开地址的源）→ 退回服务端中转 `/app/infra/file/get/{id}`。
+     *
+     * 🔴 绝不下发相对路径。客户端的头像缓存只认 `http(s)` 开头的地址，给它一个相对路径
+     * 等于头像永远不下载——而且要等用户发现「设了头像不显示」才暴露（2026-09-09 生产实测）。
+     */
+    private fun publicUrlFor(storageKey: String, fileId: String): String {
+        val objectBase = storage.baseUrl.trim().trimEnd('/')
+        if (objectBase.isNotEmpty()) return "$objectBase/$storageKey"
         val rel = publicUrlOf(fileId)
         val base = publicBaseUrl?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return rel
         return base + rel
@@ -167,34 +181,65 @@ class FileUploadLogic(
 
     companion object {
         /**
-         * 物理 storage key（spec MODULE_MEMBER_PROFILE_SPEC §4.2）。
+         * 应用在共享对象存储里的**系统前缀**。
+         *
+         * privchat-application 与 privchat-server 共用一套凭证时各占一个顶级目录
+         * （application = `platform/`，server = `chat/`），免得两套系统的内部分目录
+         * 规则相撞。前缀写进每条记录的路径里，不是读的时候再拼——以后改前缀只影响新
+         * 文件，已有对象仍按自己那条路径读得到。
+         */
+        const val SYSTEM_PREFIX: String = "platform"
+
+        /**
+         * businessType → 物理资产目录。
+         *
+         * 两者**不是同一个东西**：`businessType` 是业务分类，鉴权和配额按它走，产品
+         * 想改名是业务侧的自由；而路径一旦写进数据库就不能动。用显式映射把它们连起来，
+         * 加业务类型时必须顺带决定目录名——漏了就在启动期炸，而不是安静地拿业务名当
+         * 目录写进去。
+         */
+        private val ASSET_DIRS: Map<String, String> = mapOf(
+            "member_avatar" to "avatars",
+            "group_avatar" to "group-avatars",
+            "feedback_attachment" to "feedback",
+            "kyc_document" to "kyc",
+            "generic_image" to "images",
+        )
+
+        fun assetDirOf(businessType: String): String =
+            ASSET_DIRS[businessType]
+                ?: error(
+                    "no asset directory mapped for businessType '$businessType'; " +
+                        "add it to FileUploadLogic.ASSET_DIRS",
+                )
+
+        /**
+         * 物理 storage key（spec MODULE_MEMBER_PROFILE_SPEC §4.2bis）。
+         *
+         * ```
+         * {SYSTEM_PREFIX}/{assetDir}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}
+         * ```
+         *
+         * 例：`platform/avatars/32/9e/329e612ae747790422b0a2cb9f18b3c9.jpg`
          *
          * **内容寻址，不带 ownerUid**：
-         *
-         * ```
-         * {businessType}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}
-         * ```
-         *
-         * 例：`member_avatar/ab/cd/abcdef....png`
-         *
-         * 三个理由：
          * 1. 多个 owner 上传同一内容 → 共享同一物理对象（去重）；
-         * 2. 大量上传时 sha256 前缀分片让 FS / object store 不会单目录倾斜；
-         * 3. URL 与磁盘路径都不暴露 uid。
+         * 2. sha256 两层前缀分片，大量上传时目录不倾斜；
+         * 3. 路径不暴露 uid。
          *
-         * 归属 / 业务关系记录在 `infra_files` 元数据列（owner_uid / business_type / sha256），
-         * 不进物理路径。
+         * 归属 / 业务关系记录在 `infra_files` 元数据列，不进物理路径。
          */
         fun storageKeyOf(businessType: String, sha256Hex: String, ext: String): String {
             require(sha256Hex.length >= 4) {
                 "sha256Hex too short for sharding: $sha256Hex"
             }
+            val dir = assetDirOf(businessType)
             val p1 = sha256Hex.substring(0, 2)
             val p2 = sha256Hex.substring(2, 4)
-            return "$businessType/$p1/$p2/$sha256Hex.$ext"
+            return "$SYSTEM_PREFIX/$dir/$p1/$p2/$sha256Hex.$ext"
         }
 
-        /** spec §4.2：返给客户端的 URL 永远走 `/app/infra/file/get/{fileId}` */
+        /** 服务端中转读取的相对地址；对象存储直读走存储源 baseUrl（见 publicUrlFor）。 */
         fun publicUrlOf(fileId: String): String = "/app/infra/file/get/$fileId"
 
         private val sha256 = CryptographyProvider.Default.get(SHA256).hasher()
