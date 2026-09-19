@@ -32,7 +32,7 @@ data class FileInfo(
     val url: String? = null,
     val mimeType: String? = null,
     val size: Long = 0,
-    /** 内容 SHA-256，hex；与目录布局规则 `{businessType}/{ownerUid}/{sha256}.{ext}` 一致。 */
+    /** 内容 SHA-256，hex；与目录布局规则 `{businessType}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}` 一致，不带 ownerUid。 */
     val sha256: String? = null,
     /** 1=active, 0=orphaned/deleted。 */
     val status: Int = 1,

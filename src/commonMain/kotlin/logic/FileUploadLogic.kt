@@ -24,11 +24,13 @@ import table.FileInfoTable
  * 3. 走 [StorageOperator]（neton-storage）写盘
  * 4. 落 `infra_files` 一行，返回 [FileInfo]（含 fileId / url）
  *
- * **目录布局是脚手架强制规范，不允许业务定制**：
+ * **目录布局是脚手架强制规范，不允许业务定制**（见 [storageKeyOf]）：
  *
  * ```
- * {basePath}/{businessType}/{ownerUid}/{sha256}.{ext}
+ * {SYSTEM_PREFIX}/{assetDir}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}
  * ```
+ *
+ * 内容寻址，不带 ownerUid——归属记在 `infra_files` 元数据列，不进物理路径。
  *
  * 同样地 url 格式也固定 `/app/infra/file/get/{fileId}`，不暴露磁盘路径。
  */

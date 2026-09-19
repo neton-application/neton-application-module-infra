@@ -7,8 +7,8 @@ package logic
  * 硬编码 + 进程加载；后续切配置文件 / DB 时只换 registry 实现，
  * 上传链路（[FileUploadLogic] / `FileController`）零改动。
  *
- * 目录布局**不是策略的一部分**——脚手架强制 `{businessType}/{ownerUid}/{sha256}.{ext}`，
- * controller / logic 不得自行拼路径。
+ * 目录布局**不是策略的一部分**——脚手架强制 `{businessType}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}`
+ * （内容寻址，不带 ownerUid；见 [FileUploadLogic.storageKeyOf]），controller / logic 不得自行拼路径。
  */
 data class FileBusinessPolicy(
     val businessType: String,
