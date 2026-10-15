@@ -7,6 +7,7 @@ import kotlin.time.Clock
 import model.FileInfo
 import neton.core.http.BadRequestException
 import neton.core.http.HttpException
+import neton.core.http.ValidationError
 import neton.core.http.NetonErrorCode
 import neton.core.http.UploadFile
 import neton.database.api.DbContext
@@ -80,23 +81,25 @@ class FileUploadLogic(
 
     private suspend fun receive(uploader: Uploader, businessType: String, file: UploadFile): FileInfo {
         val policy = policyRegistry.policyOrNull(businessType)
-            ?: throw BadRequestException("INVALID_BUSINESS_TYPE: $businessType")
+            ?: throw BadRequestException("INVALID_BUSINESS_TYPE", listOf(ValidationError(path = "businessType", message = "$businessType is not registered", code = "INVALID_BUSINESS_TYPE")))
 
         val mimeType = (file.contentType ?: "application/octet-stream").lowercase()
         if (mimeType !in policy.allowedMimeTypes) {
             throw HttpException(
                 code = NetonErrorCode.INVALID_FORMAT,
-                message = "INVALID_MIME_TYPE: $mimeType not allowed for $businessType",
+                message = "INVALID_MIME_TYPE",
+                errors = listOf(ValidationError(path = "file", message = "$mimeType not allowed for $businessType", code = "INVALID_MIME_TYPE")),
             )
         }
         if (file.size > policy.maxSizeBytes) {
             throw HttpException(
                 code = NetonErrorCode.PAYLOAD_TOO_LARGE,
-                message = "FILE_TOO_LARGE: ${file.size} > ${policy.maxSizeBytes}",
+                message = "FILE_TOO_LARGE",
+                errors = listOf(ValidationError(path = "file", message = "${file.size} > ${policy.maxSizeBytes}", code = "FILE_TOO_LARGE")),
             )
         }
         if (file.size <= 0) {
-            throw BadRequestException("EMPTY_FILE")
+            throw BadRequestException("EMPTY_FILE", listOf(ValidationError(path = "file", message = "file is empty", code = "EMPTY_FILE")))
         }
 
         val bytes = file.bytes()
@@ -121,21 +124,23 @@ class FileUploadLogic(
         bytes: ByteArray,
     ): FileInfo {
         val policy = policyRegistry.policyOrNull(businessType)
-            ?: throw BadRequestException("INVALID_BUSINESS_TYPE: $businessType")
+            ?: throw BadRequestException("INVALID_BUSINESS_TYPE", listOf(ValidationError(path = "businessType", message = "$businessType is not registered", code = "INVALID_BUSINESS_TYPE")))
         val mime = mimeType.lowercase()
         if (mime !in policy.allowedMimeTypes) {
             throw HttpException(
                 code = NetonErrorCode.INVALID_FORMAT,
-                message = "INVALID_MIME_TYPE: $mime not allowed for $businessType",
+                message = "INVALID_MIME_TYPE",
+                errors = listOf(ValidationError(path = "file", message = "$mime not allowed for $businessType", code = "INVALID_MIME_TYPE")),
             )
         }
         if (bytes.size.toLong() > policy.maxSizeBytes) {
             throw HttpException(
                 code = NetonErrorCode.PAYLOAD_TOO_LARGE,
-                message = "FILE_TOO_LARGE: ${bytes.size} > ${policy.maxSizeBytes}",
+                message = "FILE_TOO_LARGE",
+                errors = listOf(ValidationError(path = "file", message = "${bytes.size} > ${policy.maxSizeBytes}", code = "FILE_TOO_LARGE")),
             )
         }
-        if (bytes.isEmpty()) throw BadRequestException("EMPTY_FILE")
+        if (bytes.isEmpty()) throw BadRequestException("EMPTY_FILE", listOf(ValidationError(path = "file", message = "file is empty", code = "EMPTY_FILE")))
         return store(Uploader.Account(ownerUid), policy, mime, filename, bytes)
     }
 

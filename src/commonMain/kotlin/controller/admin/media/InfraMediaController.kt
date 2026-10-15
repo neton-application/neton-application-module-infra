@@ -13,6 +13,7 @@ import neton.core.annotations.RateLimit
 import neton.core.annotations.RateLimitScope
 import neton.core.http.BadRequestException
 import neton.core.http.HttpException
+import neton.core.http.ValidationError
 import neton.core.http.HttpRequest
 import neton.core.http.HttpResponse
 import neton.core.http.NetonErrorCode
@@ -50,13 +51,13 @@ class InfraMediaController(
         if (!request.isMultipart()) {
             throw HttpException(
                 code = NetonErrorCode.INVALID_PARAM_TYPE,
-                message = "INVALID_CONTENT_TYPE: expected multipart/form-data",
+                message = "INVALID_CONTENT_TYPE",
             )
         }
         val file = request.uploadFiles().first("file")
-            ?: throw BadRequestException("MISSING_FILE_FIELD: form field 'file' is required")
+            ?: throw BadRequestException("MISSING_FILE_FIELD", listOf(ValidationError(path = "file", message = "form field 'file' is required", code = "MISSING_FILE_FIELD")))
         val businessType = request.form()["businessType"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw BadRequestException("MISSING_BUSINESS_TYPE: form field 'businessType' is required")
+            ?: throw BadRequestException("MISSING_BUSINESS_TYPE", listOf(ValidationError(path = "businessType", message = "form field 'businessType' is required", code = "MISSING_BUSINESS_TYPE")))
         val adminUserId = identity.id.toLongOrNull()
             ?: throw HttpException(NetonErrorCode.PERMISSION_DENIED, "INVALID_ADMIN_IDENTITY")
 

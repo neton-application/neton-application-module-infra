@@ -14,6 +14,7 @@ import neton.core.annotations.RateLimit
 import neton.core.annotations.RateLimitScope
 import neton.core.http.BadRequestException
 import neton.core.http.HttpException
+import neton.core.http.ValidationError
 import neton.core.http.HttpRequest
 import neton.core.http.HttpResponse
 import neton.core.http.NetonErrorCode
@@ -61,16 +62,16 @@ class FileController(
         if (!request.isMultipart()) {
             throw HttpException(
                 code = NetonErrorCode.INVALID_PARAM_TYPE,
-                message = "INVALID_CONTENT_TYPE: expected multipart/form-data",
+                message = "INVALID_CONTENT_TYPE",
             )
         }
         val files = request.uploadFiles()
         val file = files.first("file")
-            ?: throw BadRequestException("MISSING_FILE_FIELD: form field 'file' is required")
+            ?: throw BadRequestException("MISSING_FILE_FIELD", listOf(ValidationError(path = "file", message = "form field 'file' is required", code = "MISSING_FILE_FIELD")))
 
         val form = request.form()
         val businessType = form["businessType"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw BadRequestException("MISSING_BUSINESS_TYPE: form field 'businessType' is required")
+            ?: throw BadRequestException("MISSING_BUSINESS_TYPE", listOf(ValidationError(path = "businessType", message = "form field 'businessType' is required", code = "MISSING_BUSINESS_TYPE")))
 
         val record = fileLogic.upload(
             ownerUid = identity.id.toLong(),
@@ -107,7 +108,7 @@ class FileController(
         @Query sig: String? = null,
     ) {
         val record = fileLogic.getByFileId(fileId)
-            ?: throw NotFoundException("FILE_NOT_FOUND: $fileId")
+            ?: throw NotFoundException("FILE_NOT_FOUND")
 
         val cacheControl: String
         if (record.status == 1 && media.verifySignature(fileId, exp, sig)) {
@@ -118,7 +119,7 @@ class FileController(
             if (!media.canRead(record, viewerUid)) {
                 throw HttpException(
                     code = NetonErrorCode.PERMISSION_DENIED,
-                    message = "FILE_FORBIDDEN: $fileId",
+                    message = "FILE_FORBIDDEN",
                 )
             }
             cacheControl = if (!media.isDelegated(record)) {
