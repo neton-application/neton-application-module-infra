@@ -214,6 +214,36 @@ class MediaLogic(
         return readable.associate { r -> r.fileId!! to viewOf(r) }
     }
 
+    override suspend fun resolveForAdmin(fileIds: Collection<String>): Map<String, MediaView> {
+        val ids = fileIds.filter { it.isNotBlank() }.distinct()
+        if (ids.isEmpty()) return emptyMap()
+        val records = ids.chunked(IN_CHUNK).flatMap { chunk ->
+            FileInfoTable.query { where { FileInfo::fileId `in` chunk } }.list()
+        }
+        return records.filter { isAdminReadable(it) }.associate { r -> r.fileId!! to adminViewOf(r) }
+    }
+
+    /** 后台读取判断（`GET /admin/infra/media/get/{fileId}` 与 [resolveForAdmin]）：未删除即可读。 */
+    fun isAdminReadable(record: FileInfo): Boolean =
+        MediaRules.adminReadable(record.fileId, record.status, MediaLifecycle.fromCode(record.lifecycle))
+
+    /** 后台看到的地址：PUBLIC 与应用侧相同；其余走后台读取地址，不签发匿名可读的签名链接。 */
+    fun adminUrlOf(record: FileInfo): String {
+        val fileId = record.fileId!!
+        return if (isPublic(record)) record.url?.takeIf { it.isNotBlank() } ?: files.relayUrlOf(fileId)
+        else FileUploadLogic.adminUrlOf(fileId)
+    }
+
+    private fun adminViewOf(r: FileInfo): MediaView = MediaView(
+        fileId = r.fileId!!,
+        url = adminUrlOf(r),
+        mimeType = r.mimeType ?: "application/octet-stream",
+        size = r.size,
+        businessType = r.businessType ?: "",
+        lifecycle = MediaLifecycle.fromCode(r.lifecycle),
+        expiresAt = null,
+    )
+
     private fun viewOf(r: FileInfo): MediaView {
         val fileId = r.fileId!!
         val public = isPublic(r)

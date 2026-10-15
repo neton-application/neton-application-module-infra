@@ -70,7 +70,7 @@ class FileController(
         return PageResponse(
             page.list.map { f ->
                 FileInfoPageItemVO(
-                    id = f.id, fileId = f.fileId, ownerUid = f.ownerUid, businessType = f.businessType,
+                    id = f.id, fileId = f.fileId, ownerUid = f.ownerUid, adminUploaderId = f.adminUploaderId, businessType = f.businessType,
                     configId = f.configId, name = f.name, path = f.path, url = f.url, mimeType = f.mimeType,
                     size = f.size, sha256 = f.sha256, status = f.status, lifecycle = f.lifecycle,
                     lifecycleAt = f.lifecycleAt, purgedAt = f.purgedAt,

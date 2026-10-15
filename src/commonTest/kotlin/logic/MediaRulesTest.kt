@@ -212,4 +212,85 @@ class MediaRulesTest {
         assertEquals(false, MediaRules.readWithoutReferences(del, 1, MediaLifecycle.DELETED, 7, 7))
         assertEquals(false, MediaRules.readWithoutReferences(null, 1, a, 7, 7))
     }
+
+    // ---- 后台上传（上传者是后台账号，owner_uid 为空） ----
+
+    private fun adminUploaded(policy: FileBusinessPolicy?, lifecycle: MediaLifecycle = MediaLifecycle.TEMPORARY) =
+        MediaRules.FileSnapshot(1, lifecycle, uploaderUid = null, policy = policy)
+
+    @Test
+    fun adminUploadedTemporaryFileCanOnlyBeAttachedBySystemActor() {
+        val f = adminUploaded(managed())
+        // 后台保存路径传 null
+        assertEquals(MediaRules.AttachDecision.Attach, decide(f, actor = null))
+        // 任何应用账号（包括与管理员同号的账号）都不是上传者
+        assertRejected(MediaErrorCode.NOT_FILE_OWNER, decide(f, actor = 7))
+        assertRejected(MediaErrorCode.NOT_FILE_OWNER, decide(f, actor = 0))
+        // 用途校验对后台上传同样生效
+        assertRejected(MediaErrorCode.USAGE_NOT_ALLOWED, decide(f, usage = "comment.image", actor = null))
+    }
+
+    @Test
+    fun adminUploadedAttachedFileReuseFollowsPolicy() {
+        val refs = listOf(MediaRules.Ref("content.item", "1", "content.image"))
+        // 同一对象再次关联（后台再保存一次）：幂等
+        assertEquals(
+            MediaRules.AttachDecision.AlreadyAttached,
+            decide(adminUploaded(managed(), MediaLifecycle.ATTACHED), refs, ownerId = "1", actor = null),
+        )
+        // 不可复用类型：别的对象引用被拒，系统操作也一样
+        assertRejected(
+            MediaErrorCode.NOT_REUSABLE,
+            decide(adminUploaded(managed(), MediaLifecycle.ATTACHED), refs, ownerId = "2", actor = null),
+        )
+        // 可复用的 DELEGATED：应用账号复用要能看到原引用对象
+        assertEquals(
+            MediaRules.AttachDecision.AttachIfActorCanViewExistingOwner,
+            decide(adminUploaded(managed(reusable = true), MediaLifecycle.ATTACHED), refs, ownerId = "2", actor = 7),
+        )
+        // 可复用的 OWNER：没有应用侧上传者 → 应用账号不能复用
+        assertRejected(
+            MediaErrorCode.NOT_FILE_OWNER,
+            decide(adminUploaded(managed(access = MediaAccess.OWNER, reusable = true), MediaLifecycle.ATTACHED), refs, ownerId = "2", actor = 7),
+        )
+    }
+
+    @Test
+    fun adminUploadedFileHasNoAppSideOwner() {
+        val del = managed()
+        val own = managed(access = MediaAccess.OWNER)
+        // 无引用的临时 DELEGATED、OWNER 文件：应用侧没有人能以「本人」读取
+        assertEquals(false, MediaRules.readWithoutReferences(del, 1, MediaLifecycle.TEMPORARY, null, 7))
+        assertEquals(false, MediaRules.readWithoutReferences(del, 1, MediaLifecycle.TEMPORARY, null, null))
+        assertEquals(false, MediaRules.readWithoutReferences(own, 1, MediaLifecycle.ATTACHED, null, 7))
+        // 已关联的 DELEGATED：按引用委托判断
+        assertNull(MediaRules.readWithoutReferences(del, 1, MediaLifecycle.ATTACHED, null, 7))
+        // 公开类型照常
+        assertEquals(true, MediaRules.readWithoutReferences(managed(access = MediaAccess.PUBLIC), 1, MediaLifecycle.TEMPORARY, null, null))
+    }
+
+    @Test
+    fun adminReadableIsAnyLiveFile() {
+        assertTrue(MediaRules.adminReadable("file_a", 1, MediaLifecycle.TEMPORARY))
+        assertTrue(MediaRules.adminReadable("file_a", 1, MediaLifecycle.ATTACHED))
+        assertTrue(MediaRules.adminReadable("file_a", 1, MediaLifecycle.ORPHANED))
+        assertFalse(MediaRules.adminReadable("file_a", 1, MediaLifecycle.DELETED))
+        assertFalse(MediaRules.adminReadable("file_a", 0, MediaLifecycle.ATTACHED))
+        assertFalse(MediaRules.adminReadable(null, 1, MediaLifecycle.ATTACHED), "只登记元数据的行没有 fileId")
+        assertFalse(MediaRules.adminReadable("", 1, MediaLifecycle.ATTACHED))
+    }
+
+    @Test
+    fun inlineSafeExcludesScriptableTypes() {
+        assertTrue(MediaRules.inlineSafe("image/png"))
+        assertTrue(MediaRules.inlineSafe("IMAGE/JPEG"))
+        assertTrue(MediaRules.inlineSafe("video/mp4"))
+        assertTrue(MediaRules.inlineSafe("application/pdf"))
+        assertTrue(MediaRules.inlineSafe("text/plain; charset=utf-8"))
+        assertFalse(MediaRules.inlineSafe("image/svg+xml"))
+        assertFalse(MediaRules.inlineSafe("text/html"))
+        assertFalse(MediaRules.inlineSafe("application/xml"))
+        assertFalse(MediaRules.inlineSafe("application/octet-stream"))
+        assertFalse(MediaRules.inlineSafe(null))
+    }
 }

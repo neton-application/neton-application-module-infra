@@ -22,8 +22,13 @@ data class FileInfo(
     val id: Long = 0,
     /** 对外公开 ID，格式 `file_<random>`；用户态上传必须有，admin 元数据登记可空。 */
     val fileId: String? = null,
-    /** 上传者 uid；下载/引用时校验归属。 */
+    /** 上传者 uid（应用账号）；下载/引用时校验归属。后台上传的行为空，见 [adminUploaderId]。 */
     val ownerUid: Long? = null,
+    /**
+     * 后台上传者（system_users.id）。后台账号与应用账号是两套 id 空间，分列存放：
+     * 有值时 [ownerUid] 为空，应用侧任何账号都不被当作这个文件的上传者。
+     */
+    val adminUploaderId: Long? = null,
     /** member_avatar / group_avatar / feedback_attachment / kyc_document / generic_image。 */
     val businessType: String? = null,
     val configId: Long? = null,

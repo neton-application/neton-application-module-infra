@@ -49,6 +49,8 @@ data class FileInfoPageItemVO(
     val id: Long,
     val fileId: String? = null,
     val ownerUid: Long? = null,
+    /** 后台上传者（system_users.id）；应用账号上传的行为空。 */
+    val adminUploaderId: Long? = null,
     val businessType: String? = null,
     val configId: Long? = null,
     val name: String,

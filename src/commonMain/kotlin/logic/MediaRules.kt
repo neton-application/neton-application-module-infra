@@ -52,8 +52,10 @@ object MediaRules {
         if (refs.any { it.ownerType == ownerType && it.ownerId == ownerId && it.usage == usage }) {
             return AttachDecision.AlreadyAttached
         }
+        // null = 系统 / 后台操作。uploaderUid 是应用账号 id；后台上传的文件这里为 null，
+        // 所以没有任何应用账号算它的上传者，它的临时文件只能以 null（后台保存路径）关联。
         val isSystem = actorUserId == null
-        val isUploader = !isSystem && actorUserId == file.uploaderUid
+        val isUploader = !isSystem && file.uploaderUid != null && actorUserId == file.uploaderUid
 
         if (file.lifecycle == MediaLifecycle.TEMPORARY) {
             // 临时文件只能由上传者本人关联
@@ -127,7 +129,7 @@ object MediaRules {
         viewerUserId: Long?,
     ): Boolean? {
         if (status != 1 || lifecycle == MediaLifecycle.DELETED || policy == null) return false
-        val isUploader = viewerUserId != null && viewerUserId == uploaderUid
+        val isUploader = viewerUserId != null && uploaderUid != null && viewerUserId == uploaderUid
         return when (policy.access) {
             MediaAccess.PUBLIC -> true
             MediaAccess.OWNER -> isUploader
@@ -138,6 +140,24 @@ object MediaRules {
                 else -> null
             }
         }
+    }
+
+    /**
+     * 后台读取（`GET /admin/infra/media/get/{fileId}`、`MediaService.resolveForAdmin`）：有 fileId、
+     * 仍 active、未进入 deleted 即可读，不看访问方式与引用（权限由后台接口的 `@Permission` 把关）。
+     */
+    fun adminReadable(fileId: String?, status: Int, lifecycle: MediaLifecycle): Boolean =
+        !fileId.isNullOrBlank() && status == 1 && lifecycle != MediaLifecycle.DELETED
+
+    /**
+     * 后台读取时浏览器能否内联展示。用户上传的内容在后台源下打开，必须排除能执行脚本的类型
+     * （SVG、HTML、XML 等）：这些一律按附件下载，配合响应上的 `nosniff` 与 `sandbox` CSP。
+     */
+    fun inlineSafe(mimeType: String?): Boolean {
+        val m = mimeType?.substringBefore(';')?.trim()?.lowercase() ?: return false
+        if (m == "image/svg+xml") return false
+        return m.startsWith("image/") || m.startsWith("video/") || m.startsWith("audio/") ||
+            m == "application/pdf" || m == "text/plain"
     }
 
     private fun reject(code: MediaErrorCode, message: String) = AttachDecision.Reject(code, message)

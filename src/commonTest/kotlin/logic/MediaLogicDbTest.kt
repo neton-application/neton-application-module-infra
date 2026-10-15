@@ -355,6 +355,67 @@ class MediaLogicDbTest {
         assertEquals("attached", db.lifecycleOf(many[0]), "内置类型 attach 后仍是 attached")
     }
 
+    /** 后台上传：上传者记在 admin_uploader_id，应用侧同号账号不是上传者；只能以 null 关联。 */
+    @Test
+    fun adminUploadIsAttachedBySystemActorOnlyAndResolvesForAdmin() = withMigratedDatabase { db ->
+        val fx = Fixture(db)
+        val upload = object : neton.core.http.UploadFile {
+            override val fieldName = "file"
+            override val filename = "a.png"
+            override val contentType: String? = "image/png"
+            override val size = png.size.toLong()
+            override suspend fun bytes() = png
+        }
+        val f = fx.files.uploadAsAdmin(7, "content.image", upload)
+        val id = f.fileId!!
+        val row = db.fetchAll(
+            "SELECT owner_uid, admin_uploader_id, lifecycle FROM infra_files WHERE file_id = :f",
+            mapOf("f" to id),
+        ).first()
+        assertNull(row.longOrNull("owner_uid"))
+        assertEquals(7L, row.longOrNull("admin_uploader_id"))
+        assertEquals("temporary", row.string("lifecycle"))
+
+        // 同一管理员再传同内容 → 复用临时记录；同号应用账号上传 → 另一条记录
+        assertEquals(id, fx.files.uploadAsAdmin(7, "content.image", upload).fileId)
+        val appSide = fx.files.storeBytes(7, "content.image", "a.png", "image/png", png).fileId!!
+        assertTrue(appSide != id)
+        assertEquals(id, fx.files.uploadAsAdmin(7, "content.image", upload).fileId, "应用账号的行不被后台去重命中")
+
+        // 应用侧：同号账号既读不到也关联不了
+        assertTrue(fx.media.resolve(listOf(id), 7).isEmpty())
+        assertFalse(fx.media.canRead(fx.files.getByFileId(id)!!, 7))
+        assertEquals(
+            MediaErrorCode.NOT_FILE_OWNER,
+            assertIs<AttachResult.Rejected>(fx.media.attach(id, "content.item", "1", "content.image", 7)).code,
+        )
+
+        // 后台展开：临时文件也给后台读取地址，不签名
+        val adminView = assertNotNull(fx.media.resolveForAdmin(listOf(id, "file_nope"))[id])
+        assertEquals("/admin/infra/media/get/$id", adminView.url)
+        assertNull(adminView.expiresAt)
+        assertEquals(MediaLifecycle.TEMPORARY, adminView.lifecycle)
+
+        // 后台保存路径（actor = null）关联成功
+        assertIs<AttachResult.Attached>(fx.media.attach(id, "content.item", "1", "content.image", null))
+        assertEquals("attached", db.lifecycleOf(id))
+        assertTrue(fx.media.resolve(listOf(id), 8).isEmpty(), "引用对象不可见")
+        fx.visible = setOf("content.item" to "1")
+        assertEquals(setOf(id), fx.media.resolve(listOf(id), 8).keys, "可见后按引用委托放行")
+
+        // 公开类型：后台展开与应用侧相同
+        val pub = fx.files.uploadAsAdmin(7, "generic_image", upload).fileId!!
+        assertNull(fx.files.getByFileId(pub)!!.ownerUid)
+        assertEquals(fx.media.resolve(listOf(pub), null)[pub]!!.url, fx.media.resolveForAdmin(listOf(pub))[pub]!!.url)
+
+        // 清理后后台也读不到
+        fx.media.detachAll("content.item", "1")
+        db.age(id, 8 * MediaRules.DAY_MS)
+        fx.media.cleanupExpired()
+        assertTrue(fx.media.resolveForAdmin(listOf(id)).isEmpty())
+        assertFalse(fx.media.isAdminReadable(fx.files.getByFileId(id)!!))
+    }
+
     @Test
     fun importWithoutHttpClientIsNotAvailable() = withMigratedDatabase { db ->
         val fx = Fixture(db)

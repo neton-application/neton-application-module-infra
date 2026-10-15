@@ -15,7 +15,9 @@ interface MediaService {
     /**
      * 确认关联。任何一项校验不通过都返回 [AttachResult.Rejected]，不静默放行。
      *
-     * @param actorUserId 操作者；null 表示系统 / 后台操作（不做归属与读取权限校验）。
+     * @param actorUserId 应用账号操作者；null 表示系统 / 后台操作（不做归属与读取权限校验）。
+     *   后台保存路径一律传 null：后台账号与应用账号是两套 id 空间，管理员 id 不能当成应用账号比较。
+     *   后台上传的文件（`POST /admin/infra/media/upload`）没有应用侧上传者，它的临时文件只能以 null 关联。
      */
     suspend fun attach(
         fileId: String,
@@ -38,6 +40,21 @@ interface MediaService {
      * @param viewerUserId 访问者；null 表示匿名。
      */
     suspend fun resolve(fileIds: Collection<String>, viewerUserId: Long?): Map<String, MediaView>
+
+    /**
+     * 后台展开（编辑器、审核、评论管理预览草稿 / 会员可见 / 临时文件）。
+     *
+     * 不做按访问者的判断：**任何未删除的文件**都返回（含 temporary）。调用方必须是已通过后台
+     * 权限校验的接口；这里只发地址，真正读字节的 `GET /admin/infra/media/get/{fileId}` 还要
+     * `infra:media:query` 权限。
+     *
+     * 地址：PUBLIC 与 [resolve] 相同（长期地址）；OWNER / DELEGATED 为后台读取地址
+     * `/admin/infra/media/get/{fileId}`（相对路径，凭后台会话 Cookie 读取，`expiresAt` 为 null）。
+     * 不签发应用侧签名地址，免得后台预览产生能被转发出去的匿名可读链接。
+     *
+     * 默认实现返回空表，仅为不支持后台展开的替身实现（测试 fake）保留源码兼容。
+     */
+    suspend fun resolveForAdmin(fileIds: Collection<String>): Map<String, MediaView> = emptyMap()
 
     /**
      * 服务端转存：下载 [url]（仅 http / https，带超时、大小上限、MIME 嗅探），按 [businessType]

@@ -60,7 +60,25 @@ class FileUploadLogic(
         ownerUid: Long,
         businessType: String,
         file: UploadFile,
-    ): FileInfo {
+    ): FileInfo = receive(Uploader.Account(ownerUid), businessType, file)
+
+    /**
+     * 后台上传（`POST /admin/infra/media/upload`）：与 [upload] 同一套策略校验、同一条落盘落库
+     * 路径，托管类型同样以 temporary 起步。
+     *
+     * 后台账号与应用账号是两套 id 空间，所以上传者**不记进 `owner_uid`**（应用侧的「本人」判断
+     * 全都比较这一列），而是记在 `admin_uploader_id`，`owner_uid` 留空。于是：
+     * - 应用侧任何账号都不是这个文件的上传者：不能以本人身份读取 OWNER / DELEGATED 文件，
+     *   也不能 attach 它的临时文件；
+     * - attach 由后台保存路径以 `actorUserId = null`（系统 / 后台操作）完成，见 [MediaRules.decideAttach]。
+     */
+    suspend fun uploadAsAdmin(
+        adminUserId: Long,
+        businessType: String,
+        file: UploadFile,
+    ): FileInfo = receive(Uploader.Admin(adminUserId), businessType, file)
+
+    private suspend fun receive(uploader: Uploader, businessType: String, file: UploadFile): FileInfo {
         val policy = policyRegistry.policyOrNull(businessType)
             ?: throw BadRequestException("INVALID_BUSINESS_TYPE: $businessType")
 
@@ -88,7 +106,7 @@ class FileUploadLogic(
             )
         }
 
-        return store(ownerUid, policy, mimeType, file.filename, bytes)
+        return store(uploader, policy, mimeType, file.filename, bytes)
     }
 
     /**
@@ -118,11 +136,28 @@ class FileUploadLogic(
             )
         }
         if (bytes.isEmpty()) throw BadRequestException("EMPTY_FILE")
-        return store(ownerUid, policy, mime, filename, bytes)
+        return store(Uploader.Account(ownerUid), policy, mime, filename, bytes)
     }
 
+    /**
+     * 上传者。两套 id 空间分列存放：应用账号进 `owner_uid`，后台账号进 `admin_uploader_id`
+     * （此时 `owner_uid` 为空），绝不混在同一列里比较。
+     */
+    sealed interface Uploader {
+        data class Account(val uid: Long) : Uploader
+        data class Admin(val adminUserId: Long) : Uploader
+    }
+
+    private val Uploader.ownerUid: Long? get() = (this as? Uploader.Account)?.uid
+    private val Uploader.adminUploaderId: Long? get() = (this as? Uploader.Admin)?.adminUserId
+    private val Uploader.logLabel: String
+        get() = when (this) {
+            is Uploader.Account -> "uid:$uid"
+            is Uploader.Admin -> "admin:$adminUserId"
+        }
+
     private suspend fun store(
-        ownerUid: Long,
+        uploader: Uploader,
         policy: FileBusinessPolicy,
         mimeType: String,
         filename: String,
@@ -133,20 +168,31 @@ class FileUploadLogic(
         val ext = extensionFor(mimeType, filename)
         val storageKey = storageKeyOf(policy, sha256Hex, ext)
         if (policy.managedLifecycle) {
-            return storeManaged(ownerUid, policy, mimeType, filename, bytes, sha256Hex, storageKey)
+            return storeManaged(uploader, policy, mimeType, filename, bytes, sha256Hex, storageKey)
         }
-        // 幂等：同 owner + same businessType + same sha256 已上传过 → 直接返 existing
-        val existing = FileInfoTable.oneWhere {
-            and(
-                FileInfo::ownerUid eq ownerUid,
-                FileInfo::businessType eq businessType,
-                FileInfo::sha256 eq sha256Hex,
-                FileInfo::status eq 1,
-            )
+        // 幂等：同 owner + same businessType + same sha256 已上传过 → 直接返 existing。
+        // 后台上传的行 owner_uid 为空，按 admin_uploader_id 去重；两类行互不命中。
+        val existing = when (uploader) {
+            is Uploader.Account -> FileInfoTable.oneWhere {
+                and(
+                    FileInfo::ownerUid eq uploader.uid,
+                    FileInfo::businessType eq businessType,
+                    FileInfo::sha256 eq sha256Hex,
+                    FileInfo::status eq 1,
+                )
+            }
+            is Uploader.Admin -> FileInfoTable.oneWhere {
+                and(
+                    FileInfo::adminUploaderId eq uploader.adminUserId,
+                    FileInfo::businessType eq businessType,
+                    FileInfo::sha256 eq sha256Hex,
+                    FileInfo::status eq 1,
+                )
+            }
         }
         if (existing != null) {
             log.info(
-                "FileUploadLogic.upload: dedup hit fileId=${existing.fileId} owner=$ownerUid sha=$sha256Hex",
+                "FileUploadLogic.upload: dedup hit fileId=${existing.fileId} owner=${uploader.logLabel} sha=$sha256Hex",
             )
             return existing
         }
@@ -160,7 +206,8 @@ class FileUploadLogic(
 
         val record = FileInfo(
             fileId = fileId,
-            ownerUid = ownerUid,
+            ownerUid = uploader.ownerUid,
+            adminUploaderId = uploader.adminUploaderId,
             businessType = businessType,
             configId = null,
             name = filename,
@@ -173,7 +220,7 @@ class FileUploadLogic(
         )
         val inserted = FileInfoTable.insert(record)
         log.info(
-            "FileUploadLogic.upload: ok fileId=$fileId owner=$ownerUid type=$businessType size=${bytes.size} sha=$sha256Hex",
+            "FileUploadLogic.upload: ok fileId=$fileId owner=${uploader.logLabel} type=$businessType size=${bytes.size} sha=$sha256Hex",
         )
         // KSP 生成的 insert 通常回填自增 id；fileId 等保持原值
         return inserted
@@ -193,7 +240,7 @@ class FileUploadLogic(
      * 免得把用户第二次上传的图挂到第一次的引用关系上（不可复用的类型会因此 attach 失败）。
      */
     private suspend fun storeManaged(
-        ownerUid: Long,
+        uploader: Uploader,
         policy: FileBusinessPolicy,
         mimeType: String,
         filename: String,
@@ -203,15 +250,24 @@ class FileUploadLogic(
     ): FileInfo = db.transaction {
         lockStoragePath(this, storageKey)
         val now = Clock.System.now().toEpochMilliseconds()
+        // 只复用同一上传者的临时记录；后台上传的行 owner_uid 为空，按 admin_uploader_id 匹配
+        val uploaderClause = when (uploader) {
+            is Uploader.Account -> "owner_uid = :owner"
+            is Uploader.Admin -> "admin_uploader_id = :owner AND owner_uid IS NULL"
+        }
+        val ownerParam = when (uploader) {
+            is Uploader.Account -> uploader.uid
+            is Uploader.Admin -> uploader.adminUserId
+        }
         val reusable = fetchAll(
             """
             SELECT id FROM infra_files
-            WHERE owner_uid = :owner AND business_type = :type AND sha256 = :sha
+            WHERE $uploaderClause AND business_type = :type AND sha256 = :sha
               AND status = 1 AND lifecycle = '${port.MediaLifecycle.TEMPORARY.code}'
             ORDER BY id DESC LIMIT 1
             FOR UPDATE
             """.trimIndent(),
-            mapOf("owner" to ownerUid, "type" to policy.businessType, "sha" to sha256Hex),
+            mapOf("owner" to ownerParam, "type" to policy.businessType, "sha" to sha256Hex),
         ).firstOrNull()?.long("id")
         if (reusable != null) {
             execute(
@@ -221,7 +277,7 @@ class FileUploadLogic(
             val existing = FileInfoTable.get(reusable)
             if (existing != null) {
                 log.info(
-                    "FileUploadLogic.upload: dedup hit (temporary) fileId=${existing.fileId} owner=$ownerUid sha=$sha256Hex",
+                    "FileUploadLogic.upload: dedup hit (temporary) fileId=${existing.fileId} owner=${uploader.logLabel} sha=$sha256Hex",
                 )
                 return@transaction existing
             }
@@ -232,7 +288,8 @@ class FileUploadLogic(
         val inserted = FileInfoTable.insert(
             FileInfo(
                 fileId = fileId,
-                ownerUid = ownerUid,
+                ownerUid = uploader.ownerUid,
+                adminUploaderId = uploader.adminUploaderId,
                 businessType = policy.businessType,
                 configId = null,
                 name = filename,
@@ -247,7 +304,7 @@ class FileUploadLogic(
             ),
         )
         log.info(
-            "FileUploadLogic.upload: ok (temporary) fileId=$fileId owner=$ownerUid type=${policy.businessType} size=${bytes.size} sha=$sha256Hex",
+            "FileUploadLogic.upload: ok (temporary) fileId=$fileId owner=${uploader.logLabel} type=${policy.businessType} size=${bytes.size} sha=$sha256Hex",
         )
         inserted
     }
@@ -396,6 +453,12 @@ class FileUploadLogic(
 
         /** 服务端中转读取的相对地址；对象存储直读走存储源 baseUrl（见 publicUrlFor）。 */
         fun publicUrlOf(fileId: String): String = "/app/infra/file/get/$fileId"
+
+        /**
+         * 后台读取地址（`GET /admin/infra/media/get/{fileId}`）。相对路径：后台前端与后端同源，
+         * 凭 HttpOnly 会话 Cookie 鉴权，所以 `<img src>` 直接可用，不需要签名。
+         */
+        fun adminUrlOf(fileId: String): String = "/admin/infra/media/get/$fileId"
 
         private val sha256 = CryptographyProvider.Default.get(SHA256).hasher()
 
