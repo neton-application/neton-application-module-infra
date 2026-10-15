@@ -3,11 +3,13 @@ package controller.app.infra.file
 import controller.app.infra.file.dto.FileUploadResponse
 import kotlinx.serialization.Serializable
 import logic.FileUploadLogic
+import logic.MediaLogic
 import neton.core.annotations.AllowAnonymous
 import neton.core.annotations.Controller
 import neton.core.annotations.Get
 import neton.core.annotations.PathVariable
 import neton.core.annotations.Post
+import neton.core.annotations.Query
 import neton.core.annotations.RateLimit
 import neton.core.annotations.RateLimitScope
 import neton.core.http.BadRequestException
@@ -34,6 +36,7 @@ import neton.core.interfaces.Identity
 @Controller("/infra/file")
 class FileController(
     private val fileLogic: FileUploadLogic,
+    private val media: MediaLogic,
 ) {
 
     /**
@@ -89,8 +92,10 @@ class FileController(
      *
      * - PUBLIC（avatar / generic_image）**匿名可读**——头像经 <img>/Image 标签
      *   加载,带不了 Authorization header;内容寻址 fileId 本身即不可猜的凭据
-     * - PRIVATE（feedback / kyc）仅 owner 可读(匿名一律拒)
-     * - 不存在 / status 非 active → 404
+     * - OWNER（feedback / kyc，旧称 PRIVATE）仅 owner 可读(匿名一律拒)
+     * - DELEGATED：任一引用对象对访问者可见即可读（infra-media §7.1）；无引用的临时文件只有上传者可读
+     * - 带有效未过期签名（`?exp=&sig=`，由 `MediaService.resolve` 签发）→ 不看身份直接下发
+     * - 不存在 → 404；已删除 / 无权 → 403
      */
     @AllowAnonymous
     @Get("/get/{fileId}")
@@ -98,22 +103,36 @@ class FileController(
         identity: Identity?,
         response: HttpResponse,
         @PathVariable fileId: String,
+        @Query exp: Long? = null,
+        @Query sig: String? = null,
     ) {
         val record = fileLogic.getByFileId(fileId)
             ?: throw NotFoundException("FILE_NOT_FOUND: $fileId")
 
-        val viewerUid = identity?.id?.toLongOrNull()
-        if (!fileLogic.isReadableBy(record, viewerUid)) {
-            throw HttpException(
-                code = NetonErrorCode.PERMISSION_DENIED,
-                message = "FILE_FORBIDDEN: $fileId",
-            )
+        val cacheControl: String
+        if (record.status == 1 && media.verifySignature(fileId, exp, sig)) {
+            // 签名地址：签发时已确认可读；缓存不超过签名剩余有效期
+            cacheControl = "private, max-age=${media.signatureRemainingSeconds(exp!!)}"
+        } else {
+            val viewerUid = identity?.id?.toLongOrNull()
+            if (!media.canRead(record, viewerUid)) {
+                throw HttpException(
+                    code = NetonErrorCode.PERMISSION_DENIED,
+                    message = "FILE_FORBIDDEN: $fileId",
+                )
+            }
+            cacheControl = if (!media.isDelegated(record)) {
+                // 内容寻址(fileId 由 SHA-256 派生,内容变即换 URL)⇒ 永久缓存安全;
+                // 浏览器 HTTP 缓存借此达到微信式头像缓存等效(AVATAR_CACHE_SPEC §2)。
+                "public, max-age=31536000, immutable"
+            } else {
+                // 委托访问随引用对象状态变化，不能被共享缓存或长期缓存
+                "private, no-store"
+            }
         }
 
         val bytes = fileLogic.readBytes(record)
-        // 内容寻址(fileId 由 SHA-256 派生,内容变即换 URL)⇒ 永久缓存安全;
-        // 浏览器 HTTP 缓存借此达到微信式头像缓存等效(AVATAR_CACHE_SPEC §2)。
-        response.header("Cache-Control", "public, max-age=31536000, immutable")
+        response.header("Cache-Control", cacheControl)
         response.bytes(
             data = bytes,
             contentType = record.mimeType ?: "application/octet-stream",

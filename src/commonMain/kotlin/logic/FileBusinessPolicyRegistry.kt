@@ -1,17 +1,47 @@
 package logic
 
 /**
- * `businessType` → [FileBusinessPolicy] 查表（spec MODULE_MEMBER_PROFILE_SPEC §4.2）。
+ * `businessType` → [FileBusinessPolicy] 登记表（spec MODULE_MEMBER_PROFILE_SPEC §4.2；infra-media §3）。
  *
- * **第一版硬编码内置策略**。后续 v2 切外部配置文件 / DB 时换实现，
- * 上传链路（[FileUploadLogic] / `FileController`）调用方不改一行。
+ * infra 预置内置类型（[default]），并以 `bindIfAbsent` 装进上下文；其它模块在自己的
+ * bootstrap 里取出来 [register] 自己的类型。只在装配期登记，服务期只读。
  *
  * 未注册的 businessType 通过 [policyOrThrow] / [policyOrNull] 返回失败 / null，
  * 调用方负责把错抛成 400 `INVALID_BUSINESS_TYPE`。
  */
 class FileBusinessPolicyRegistry(
-    private val policies: Map<String, FileBusinessPolicy>,
+    initial: Collection<FileBusinessPolicy> = emptyList(),
 ) {
+    private val policies = LinkedHashMap<String, FileBusinessPolicy>()
+
+    init {
+        initial.forEach { register(it) }
+    }
+
+    /**
+     * 登记一个业务类型。code 重复直接报错——两个模块抢同一个类型名，谁覆盖谁都是事故。
+     *
+     * 注册期校验（错了在启动期炸，而不是第一次上传时）：
+     * - code 合法（字母数字、`.`、`_`、`-`）
+     * - 有物理资产目录（新类型必须声明 [FileBusinessPolicy.assetDir]）
+     * - 大小上限、MIME 白名单、宽限期有效
+     */
+    fun register(policy: FileBusinessPolicy) {
+        val code = policy.businessType
+        require(CODE.matches(code)) { "invalid businessType code '$code'" }
+        require(code !in policies) { "businessType '$code' is already registered" }
+        require(policy.maxSizeBytes > 0) { "businessType '$code': maxSizeBytes must be > 0" }
+        require(policy.allowedMimeTypes.isNotEmpty()) { "businessType '$code': allowedMimeTypes is empty" }
+        require(policy.temporaryHours > 0 && policy.orphanedDays > 0) {
+            "businessType '$code': temporaryHours / orphanedDays must be > 0"
+        }
+        policy.assetDir?.let {
+            require(ASSET_DIR.matches(it)) { "businessType '$code': invalid assetDir '$it'" }
+        }
+        // 内置映射或显式目录必须有一个，否则 storageKeyOf 会在首次上传时才失败
+        FileUploadLogic.assetDirOf(policy)
+        policies[code] = policy
+    }
 
     fun policyOrNull(businessType: String): FileBusinessPolicy? = policies[businessType]
 
@@ -21,9 +51,13 @@ class FileBusinessPolicyRegistry(
                 "INVALID_BUSINESS_TYPE: '$businessType' not registered",
             )
 
-    fun businessTypes(): Set<String> = policies.keys
+    fun businessTypes(): Set<String> = policies.keys.toSet()
+
+    fun all(): List<FileBusinessPolicy> = policies.values.toList()
 
     companion object {
+        private val CODE = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+        private val ASSET_DIR = Regex("^[a-z0-9][a-z0-9-]{0,47}$")
         private const val MB = 1024L * 1024L
 
         private val IMAGE_AVATAR_MIMES = setOf(
@@ -33,7 +67,8 @@ class FileBusinessPolicyRegistry(
         )
 
         /**
-         * 默认硬编码策略（v1）。
+         * 内置策略（v1）。全部 `managedLifecycle = false`：现有调用方不 attach，
+         * 这些类型的文件上传即为 attached，永远不进清理。
          *
          * 边界与 spec MODULE_MEMBER_PROFILE_SPEC §6 字段校验汇总对齐：
          * - 头像类（member / group）：3 种 MIME，5 MB，public
@@ -45,7 +80,7 @@ class FileBusinessPolicyRegistry(
             val list = listOf(
                 FileBusinessPolicy(
                     businessType = "member_avatar",
-                    visibility = FileVisibility.PUBLIC,
+                    access = MediaAccess.PUBLIC,
                     allowedMimeTypes = IMAGE_AVATAR_MIMES,
                     maxSizeBytes = 5 * MB,
                     imagePolicy = ImagePolicy(
@@ -58,7 +93,7 @@ class FileBusinessPolicyRegistry(
                 ),
                 FileBusinessPolicy(
                     businessType = "group_avatar",
-                    visibility = FileVisibility.PUBLIC,
+                    access = MediaAccess.PUBLIC,
                     allowedMimeTypes = IMAGE_AVATAR_MIMES,
                     maxSizeBytes = 5 * MB,
                     imagePolicy = ImagePolicy(
@@ -71,7 +106,7 @@ class FileBusinessPolicyRegistry(
                 ),
                 FileBusinessPolicy(
                     businessType = "feedback_attachment",
-                    visibility = FileVisibility.PRIVATE,
+                    access = MediaAccess.OWNER,
                     allowedMimeTypes = setOf(
                         "image/jpeg",
                         "image/png",
@@ -83,7 +118,7 @@ class FileBusinessPolicyRegistry(
                 ),
                 FileBusinessPolicy(
                     businessType = "kyc_document",
-                    visibility = FileVisibility.PRIVATE,
+                    access = MediaAccess.OWNER,
                     allowedMimeTypes = setOf(
                         "image/jpeg",
                         "image/png",
@@ -93,12 +128,12 @@ class FileBusinessPolicyRegistry(
                 ),
                 FileBusinessPolicy(
                     businessType = "generic_image",
-                    visibility = FileVisibility.PUBLIC,
+                    access = MediaAccess.PUBLIC,
                     allowedMimeTypes = IMAGE_AVATAR_MIMES,
                     maxSizeBytes = 5 * MB,
                 ),
             )
-            return FileBusinessPolicyRegistry(list.associateBy { it.businessType })
+            return FileBusinessPolicyRegistry(list)
         }
     }
 }

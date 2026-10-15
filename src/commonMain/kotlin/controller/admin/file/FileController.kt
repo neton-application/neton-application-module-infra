@@ -1,9 +1,12 @@
 package controller.admin.file
 
+import controller.admin.file.dto.FileInfoPageItemVO
 import controller.admin.file.dto.FileInfoVO
+import dto.PageResponse
 import controller.admin.file.dto.FilePresignedUrlVO
 import controller.admin.file.dto.UploadFileRequest
 import logic.FileLogic
+import logic.MediaLogic
 import model.FileInfo
 import neton.core.annotations.Controller
 import neton.core.annotations.Get
@@ -19,6 +22,7 @@ import neton.logging.Logger
 class FileController(
     private val log: Logger,
     private val fileLogic: FileLogic,
+    private val media: MediaLogic,
 ) {
 
     @Post("/upload")
@@ -60,7 +64,22 @@ class FileController(
         @Query pageSize: Int = 10,
         @Query name: String? = null,
         @Query configId: Long? = null
-    ) = fileLogic.pageFileInfo(pageNo, pageSize, name, configId)
+    ): PageResponse<FileInfoPageItemVO> {
+        val page = fileLogic.pageFileInfo(pageNo, pageSize, name, configId)
+        val counts = media.referenceCounts(page.list.mapNotNull { it.fileId })
+        return PageResponse(
+            page.list.map { f ->
+                FileInfoPageItemVO(
+                    id = f.id, fileId = f.fileId, ownerUid = f.ownerUid, businessType = f.businessType,
+                    configId = f.configId, name = f.name, path = f.path, url = f.url, mimeType = f.mimeType,
+                    size = f.size, sha256 = f.sha256, status = f.status, lifecycle = f.lifecycle,
+                    lifecycleAt = f.lifecycleAt, purgedAt = f.purgedAt,
+                    referenceCount = f.fileId?.let { counts[it] } ?: 0, createdAt = f.createdAt,
+                )
+            },
+            page.total, page.page, page.size, page.totalPages,
+        )
+    }
 
     @Get("/presigned-url")
     @Permission("infra:file:query")

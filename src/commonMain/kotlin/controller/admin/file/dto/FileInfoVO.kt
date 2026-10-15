@@ -39,3 +39,28 @@ data class UploadFileRequest(
     @property:Min(0)
     val size: Long = 0
 )
+
+/**
+ * 后台文件分页的一行：`infra_files` 全部列 + 媒体引用数（infra-media §9）。
+ * 字段是旧响应（直接返回 FileInfo）的超集，前端不改也能用。
+ */
+@Serializable
+data class FileInfoPageItemVO(
+    val id: Long,
+    val fileId: String? = null,
+    val ownerUid: Long? = null,
+    val businessType: String? = null,
+    val configId: Long? = null,
+    val name: String,
+    val path: String,
+    val url: String? = null,
+    val mimeType: String? = null,
+    val size: Long = 0,
+    val sha256: String? = null,
+    val status: Int = 1,
+    val lifecycle: String = "attached",
+    val lifecycleAt: Long? = null,
+    val purgedAt: Long? = null,
+    val referenceCount: Long = 0,
+    val createdAt: Long? = null,
+)

@@ -36,6 +36,16 @@ data class FileInfo(
     val sha256: String? = null,
     /** 1=active, 0=orphaned/deleted。 */
     val status: Int = 1,
+    /**
+     * 媒体生命周期（infra-media §6）：temporary / attached / orphaned / deleted，见 `port.MediaLifecycle`。
+     * 只有 `managedLifecycle` 的业务类型会离开 attached；内置类型与历史行恒为 attached。
+     * 进入 deleted 时 [status] 同步置 0。
+     */
+    val lifecycle: String = "attached",
+    /** [lifecycle] 最近一次变化的时刻（epoch ms）；宽限期从这里算。 */
+    val lifecycleAt: Long? = null,
+    /** 物理对象已删除（或确认仍被同路径存活记录共用而无需删）的时刻；null 表示待清理。 */
+    val purgedAt: Long? = null,
     @CreatedAt
     val createdAt: Long? = null
 )

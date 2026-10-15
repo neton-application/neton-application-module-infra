@@ -9,6 +9,7 @@ import neton.core.http.BadRequestException
 import neton.core.http.HttpException
 import neton.core.http.NetonErrorCode
 import neton.core.http.UploadFile
+import neton.database.api.DbContext
 import neton.database.dsl.*
 import neton.logging.Logger
 import neton.storage.StorageOperator
@@ -38,6 +39,8 @@ class FileUploadLogic(
     private val log: Logger,
     private val storage: StorageOperator,
     private val policyRegistry: FileBusinessPolicyRegistry,
+    /** 托管生命周期类型的写入要在事务里与清理互斥（见 [storeManaged]）。 */
+    private val db: DbContext,
     /**
      * 走服务端中转读取时的绝对前缀（如 `https://h5.example.com/api`）。
      *
@@ -85,10 +88,53 @@ class FileUploadLogic(
             )
         }
 
-        val sha256Hex = sha256Hex(bytes)
-        val ext = extensionFor(mimeType, file.filename)
-        val storageKey = storageKeyOf(businessType, sha256Hex, ext)
+        return store(ownerUid, policy, mimeType, file.filename, bytes)
+    }
 
+    /**
+     * 服务端已经拿到字节（例如服务端转存 `MediaService.importFromUrl`）时的入口：
+     * 与 [upload] 同一套策略校验、同一条落盘落库路径。[mimeType] 由调用方嗅探确定。
+     */
+    suspend fun storeBytes(
+        ownerUid: Long,
+        businessType: String,
+        filename: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ): FileInfo {
+        val policy = policyRegistry.policyOrNull(businessType)
+            ?: throw BadRequestException("INVALID_BUSINESS_TYPE: $businessType")
+        val mime = mimeType.lowercase()
+        if (mime !in policy.allowedMimeTypes) {
+            throw HttpException(
+                code = NetonErrorCode.INVALID_FORMAT,
+                message = "INVALID_MIME_TYPE: $mime not allowed for $businessType",
+            )
+        }
+        if (bytes.size.toLong() > policy.maxSizeBytes) {
+            throw HttpException(
+                code = NetonErrorCode.PAYLOAD_TOO_LARGE,
+                message = "FILE_TOO_LARGE: ${bytes.size} > ${policy.maxSizeBytes}",
+            )
+        }
+        if (bytes.isEmpty()) throw BadRequestException("EMPTY_FILE")
+        return store(ownerUid, policy, mime, filename, bytes)
+    }
+
+    private suspend fun store(
+        ownerUid: Long,
+        policy: FileBusinessPolicy,
+        mimeType: String,
+        filename: String,
+        bytes: ByteArray,
+    ): FileInfo {
+        val businessType = policy.businessType
+        val sha256Hex = sha256Hex(bytes)
+        val ext = extensionFor(mimeType, filename)
+        val storageKey = storageKeyOf(policy, sha256Hex, ext)
+        if (policy.managedLifecycle) {
+            return storeManaged(ownerUid, policy, mimeType, filename, bytes, sha256Hex, storageKey)
+        }
         // 幂等：同 owner + same businessType + same sha256 已上传过 → 直接返 existing
         val existing = FileInfoTable.oneWhere {
             and(
@@ -117,7 +163,7 @@ class FileUploadLogic(
             ownerUid = ownerUid,
             businessType = businessType,
             configId = null,
-            name = file.filename,
+            name = filename,
             path = storageKey,
             url = url,
             mimeType = mimeType,
@@ -131,6 +177,79 @@ class FileUploadLogic(
         )
         // KSP 生成的 insert 通常回填自增 id；fileId 等保持原值
         return inserted
+    }
+
+    /**
+     * 托管生命周期类型的写入（infra-media §6）：新文件以 `temporary` 起步，等业务 attach。
+     *
+     * 与清理任务互斥的两把锁：
+     * 1. **路径咨询锁**：内容寻址让同类型同内容的多条记录共用一个物理对象；清理在删对象前
+     *    拿同一把锁并确认没有存活记录还指着这条路径（[MediaLogic.purge]）。写对象 + 落库
+     *    都在锁内完成，所以不会出现「刚写好的对象被清理删掉」。
+     * 2. **行锁**：去重只复用仍是 `temporary` 的记录，并在行锁内刷新宽限期；清理恰好先锁住
+     *    并删掉它时，`FOR UPDATE` 重新求值后取不到行，退回新建记录。
+     *
+     * 已 attached / orphaned 的同内容记录不复用——再上传一次就是一个新的临时文件，
+     * 免得把用户第二次上传的图挂到第一次的引用关系上（不可复用的类型会因此 attach 失败）。
+     */
+    private suspend fun storeManaged(
+        ownerUid: Long,
+        policy: FileBusinessPolicy,
+        mimeType: String,
+        filename: String,
+        bytes: ByteArray,
+        sha256Hex: String,
+        storageKey: String,
+    ): FileInfo = db.transaction {
+        lockStoragePath(this, storageKey)
+        val now = Clock.System.now().toEpochMilliseconds()
+        val reusable = fetchAll(
+            """
+            SELECT id FROM infra_files
+            WHERE owner_uid = :owner AND business_type = :type AND sha256 = :sha
+              AND status = 1 AND lifecycle = '${port.MediaLifecycle.TEMPORARY.code}'
+            ORDER BY id DESC LIMIT 1
+            FOR UPDATE
+            """.trimIndent(),
+            mapOf("owner" to ownerUid, "type" to policy.businessType, "sha" to sha256Hex),
+        ).firstOrNull()?.long("id")
+        if (reusable != null) {
+            execute(
+                "UPDATE infra_files SET lifecycle_at = :now WHERE id = :id",
+                mapOf("now" to now, "id" to reusable),
+            )
+            val existing = FileInfoTable.get(reusable)
+            if (existing != null) {
+                log.info(
+                    "FileUploadLogic.upload: dedup hit (temporary) fileId=${existing.fileId} owner=$ownerUid sha=$sha256Hex",
+                )
+                return@transaction existing
+            }
+        }
+
+        storage.write(storageKey, bytes, WriteOptions())
+        val fileId = generateFileId()
+        val inserted = FileInfoTable.insert(
+            FileInfo(
+                fileId = fileId,
+                ownerUid = ownerUid,
+                businessType = policy.businessType,
+                configId = null,
+                name = filename,
+                path = storageKey,
+                url = publicUrlFor(storageKey, fileId),
+                mimeType = mimeType,
+                size = bytes.size.toLong(),
+                sha256 = sha256Hex,
+                status = 1,
+                lifecycle = port.MediaLifecycle.TEMPORARY.code,
+                lifecycleAt = now,
+            ),
+        )
+        log.info(
+            "FileUploadLogic.upload: ok (temporary) fileId=$fileId owner=$ownerUid type=${policy.businessType} size=${bytes.size} sha=$sha256Hex",
+        )
+        inserted
     }
 
     /** 按 fileId 查记录；下载/引用时用。 */
@@ -165,20 +284,34 @@ class FileUploadLogic(
     private fun publicUrlFor(storageKey: String, fileId: String): String {
         val objectBase = storage.baseUrl.trim().trimEnd('/')
         if (objectBase.isNotEmpty()) return "$objectBase/$storageKey"
+        return relayUrlOf(fileId)
+    }
+
+    /**
+     * 不看引用关系的读取判断。DELEGATED 在这里只认上传者——按引用放行要查引用表并回调
+     * 拥有模块，见 [MediaLogic.canRead]（`GET /app/infra/file/get/{fileId}` 走那边）。
+     */
+    fun isReadableBy(record: FileInfo, viewerUid: Long?): Boolean {
+        if (record.status != 1) return false
+        val type = record.businessType ?: return false
+        val policy = policyRegistry.policyOrNull(type) ?: return false
+        return when (policy.access) {
+            // PUBLIC(头像等)匿名可读:<img> 标签加载带不了鉴权头
+            MediaAccess.PUBLIC -> true
+            MediaAccess.OWNER, MediaAccess.DELEGATED -> viewerUid != null && record.ownerUid == viewerUid
+        }
+    }
+
+    /** 服务端中转读取地址（带 [publicBaseUrl] 前缀，未配置时为相对路径）。 */
+    fun relayUrlOf(fileId: String): String {
         val rel = publicUrlOf(fileId)
         val base = publicBaseUrl?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return rel
         return base + rel
     }
 
-    fun isReadableBy(record: FileInfo, viewerUid: Long?): Boolean {
-        if (record.status != 1) return false
-        val type = record.businessType ?: return false
-        val policy = policyRegistry.policyOrNull(type) ?: return false
-        return when (policy.visibility) {
-            // PUBLIC(头像等)匿名可读:<img> 标签加载带不了鉴权头
-            FileVisibility.PUBLIC -> true
-            FileVisibility.PRIVATE -> viewerUid != null && record.ownerUid == viewerUid
-        }
+    /** 删除物理对象（清理任务用）。对象已不存在视为成功，删失败抛出由调用方重试。 */
+    suspend fun deleteObject(path: String) {
+        if (storage.exists(path)) storage.delete(path)
     }
 
     companion object {
@@ -208,11 +341,15 @@ class FileUploadLogic(
             "generic_image" to "images",
         )
 
+        /** 显式声明的目录优先，内置类型退回固定映射。 */
+        fun assetDirOf(policy: FileBusinessPolicy): String =
+            policy.assetDir ?: assetDirOf(policy.businessType)
+
         fun assetDirOf(businessType: String): String =
             ASSET_DIRS[businessType]
                 ?: error(
                     "no asset directory mapped for businessType '$businessType'; " +
-                        "add it to FileUploadLogic.ASSET_DIRS",
+                        "declare FileBusinessPolicy.assetDir when registering it",
                 )
 
         /**
@@ -231,11 +368,27 @@ class FileUploadLogic(
          *
          * 归属 / 业务关系记录在 `infra_files` 元数据列，不进物理路径。
          */
-        fun storageKeyOf(businessType: String, sha256Hex: String, ext: String): String {
+        fun storageKeyOf(businessType: String, sha256Hex: String, ext: String): String =
+            storageKeyIn(assetDirOf(businessType), sha256Hex, ext)
+
+        fun storageKeyOf(policy: FileBusinessPolicy, sha256Hex: String, ext: String): String =
+            storageKeyIn(assetDirOf(policy), sha256Hex, ext)
+
+        /**
+         * 同一物理路径的写入与删除互斥（事务级咨询锁，事务结束自动释放）。
+         * 托管类型上传与清理任务共用，见 [storeManaged] / [MediaLogic.purge]。
+         */
+        suspend fun lockStoragePath(db: DbContext, path: String) {
+            db.fetchAll(
+                "SELECT 1 AS ok FROM pg_advisory_xact_lock(hashtext(:path))",
+                mapOf("path" to path),
+            )
+        }
+
+        private fun storageKeyIn(dir: String, sha256Hex: String, ext: String): String {
             require(sha256Hex.length >= 4) {
                 "sha256Hex too short for sharding: $sha256Hex"
             }
-            val dir = assetDirOf(businessType)
             val p1 = sha256Hex.substring(0, 2)
             val p2 = sha256Hex.substring(2, 4)
             return "$SYSTEM_PREFIX/$dir/$p1/$p2/$sha256Hex.$ext"
@@ -260,6 +413,7 @@ class FileUploadLogic(
                 "image/jpeg" -> "jpg"
                 "image/png" -> "png"
                 "image/webp" -> "webp"
+                "image/gif" -> "gif"
                 "application/pdf" -> "pdf"
                 "text/plain" -> "txt"
                 else -> fallbackName.substringAfterLast('.', missingDelimiterValue = "bin")

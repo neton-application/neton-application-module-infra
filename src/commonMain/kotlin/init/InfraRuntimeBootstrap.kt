@@ -12,7 +12,7 @@ import logic.*
 
 // MANIFEST-P3: 手写 runtime bootstrap。FileLogic / JobLogic 已标 @Logic
 // → 生成的 InfraLogicInitializer 装配; moduleId/dependsOn/migrations/路由 由 KSP manifest。
-// 这里留: FileUploadLogic (storage + inline policyRegistry) + 日志写入器。
+// 这里留: 事件编解码默认值 + 业务类型登记表 + FileUploadLogic / MediaLogic + 日志写入器。
 object InfraRuntimeBootstrap {
     fun initialize(ctx: NetonContext) {
         val loggerFactory = ctx.get(LoggerFactory::class)
@@ -28,30 +28,55 @@ object InfraRuntimeBootstrap {
         )
 
         // 把持久化设施装进总线。总线由框架在启动最早期绑定（发布方那时已持有它），
-        // 数据库要到这里才拿得到，所以分两步。编解码由应用层提供，没有就说明本部署不用
-        // 落库投递；真有监听者声明了 RETRYABLE 却没编解码，框架的 seal() 会在启动期报错。
+        // 数据库要到这里才拿得到，所以分两步。应用层可以先绑自己的编解码；没绑就用按类登记的
+        // 默认实现，各模块在自己的 bootstrap 里
+        // `(ctx.get(DomainEventCodec::class) as? SerializerDomainEventCodec)?.register(...)`
+        // 登记要可重试投递的事件。未登记的事件落库时报错，不会静默丢失。
+        ctx.bindIfAbsent(
+            neton.core.event.DomainEventCodec::class,
+            neton.core.event.SerializerDomainEventCodec(),
+        )
         val eventCodec = ctx.getOrNull(neton.core.event.DomainEventCodec::class)
         if (eventCodec != null) {
             ctx.get(neton.core.event.DomainEventBus::class)
                 .attachStore(ctx.get(neton.core.event.DomainEventStore::class), eventCodec)
         }
 
-        val policyRegistry = FileBusinessPolicyRegistry.default()
-        ctx.bind(FileBusinessPolicyRegistry::class, policyRegistry)
+        // 业务类型登记表：bindIfAbsent，宿主可预先绑定自己的；其它模块在各自 bootstrap 里
+        // ctx.get(FileBusinessPolicyRegistry::class).register(...) 登记新类型（infra-media §3）。
+        ctx.bindIfAbsent(FileBusinessPolicyRegistry::class, FileBusinessPolicyRegistry.default())
+        val policyRegistry = ctx.get(FileBusinessPolicyRegistry::class)
+        val db = ctx.get(neton.database.api.DbContext::class)
         // 文件公网前缀:conf [infra] file_public_base_url(如 https://h5.fflunp.cn/api),
         // 配置后下发绝对 URL,三端 <img>/Image 直接可加载。
         val infraConfig = neton.core.config.ConfigLoader.loadModuleConfig(moduleName = "infra")
         val filePublicBaseUrl = neton.core.config.ConfigLoader
             .getString(infraConfig, "file_public_base_url")?.trim()?.takeIf { it.isNotEmpty() }
-        ctx.bind(
-            FileUploadLogic::class,
-            FileUploadLogic(
-                log = loggerFactory.get("logic.app-file"),
-                storage = storage,
-                policyRegistry = policyRegistry,
-                publicBaseUrl = filePublicBaseUrl,
-            ),
+        val fileUploadLogic = FileUploadLogic(
+            log = loggerFactory.get("logic.app-file"),
+            storage = storage,
+            policyRegistry = policyRegistry,
+            db = db,
+            publicBaseUrl = filePublicBaseUrl,
         )
+        ctx.bind(FileUploadLogic::class, fileUploadLogic)
+
+        // 媒体关联 / 访问契约（infra-media §6 / §7）。签名密钥从 JWT 密钥按用途派生，不新增配置。
+        // MediaOwnerAccess、HttpClient 在请求时读取：前者由 infra 之后装配的模块绑定。
+        val mediaLogic = MediaLogic(
+            log = loggerFactory.get("logic.media"),
+            db = db,
+            policyRegistry = policyRegistry,
+            files = fileUploadLogic,
+            signer = MediaUrlSigner(
+                key = MediaUrlSigner.deriveKey(config.loadJwtRuntimeConfig(ctx).secretKey),
+                nowSeconds = { kotlin.time.Clock.System.now().epochSeconds },
+            ),
+            ownerAccess = { ctx.getOrNull(port.MediaOwnerAccess::class) },
+            httpClient = { ctx.getOrNull(neton.http.client.HttpClient::class) },
+        )
+        ctx.bind(MediaLogic::class, mediaLogic)
+        ctx.bindIfAbsent(port.MediaService::class, mediaLogic)
 
         // 注册 API 日志写入器
         ctx.bind(AccessLogWriter::class, DbAccessLogWriter())

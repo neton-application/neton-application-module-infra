@@ -108,20 +108,21 @@ tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64|MingwX64)"
 //   ./gradlew :module-infra:macosArm64Test
 //   EVENT_DB_URI=... ./gradlew :module-infra:postgresContractTest
 // ============================================================
-val postgresContractClass = "event.PostgresDomainEventStoreDbTest"
+// outbox store + 媒体生命周期（infra-media §6）两组真实数据库契约，共用 EVENT_DB_URI。
+val postgresContractClasses = listOf("event.PostgresDomainEventStoreDbTest", "logic.MediaLogicDbTest")
 
 tasks.named<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>("macosArm64Test") {
-    filter.excludeTestsMatching(postgresContractClass)
+    postgresContractClasses.forEach { filter.excludeTestsMatching(it) }
 }
 
 // Runs the same test binary with kotlin-test's own filter.
 tasks.register<Exec>("postgresContractTest") {
     group = "verification"
-    description = "Runs the outbox store contract against a real PostgreSQL (EVENT_DB_URI required)."
+    description = "Runs the outbox store and media lifecycle contracts against a real PostgreSQL (EVENT_DB_URI required)."
     dependsOn("linkDebugTestMacosArm64")
     val binary = layout.buildDirectory.file("bin/macosArm64/debugTest/test.kexe")
     executable(binary.get().asFile.absolutePath)
-    args("--ktest_filter=$postgresContractClass.*", "--ktest_logger=TEAMCITY")
+    args("--ktest_filter=" + postgresContractClasses.joinToString(":") { "$it.*" }, "--ktest_logger=TEAMCITY")
     doFirst {
         check(!System.getenv("EVENT_DB_URI").isNullOrBlank()) {
             "postgresContractTest requires EVENT_DB_URI (a PostgreSQL URI whose role has CREATEDB). " +

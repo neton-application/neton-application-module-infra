@@ -29,7 +29,14 @@ class FileLogic(
     }
 
     suspend fun deleteFileInfo(id: Long) {
-        FileInfoTable.destroy(id)
+        db.transaction {
+            // 行没了引用也一并解除，免得引用表里留下指向不存在文件的记录
+            execute(
+                "DELETE FROM infra_media_references WHERE file_id IN (SELECT file_id FROM infra_files WHERE id = :id AND file_id IS NOT NULL)",
+                mapOf("id" to id),
+            )
+            FileInfoTable.destroy(id)
+        }
         log.info("Deleted file info with id: $id")
     }
 
