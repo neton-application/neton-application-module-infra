@@ -39,6 +39,10 @@ kotlin {
         commonMain {
             dependencies {
                 implementation("com.netonstream.app:module-system")
+                // 套件基础契约：infra 实现其中的 IpRegionResolver（spec content-platform-architecture §5.6）
+                implementation("com.netonstream.app:application-contract")
+                // IP 属地的本地库（group 是 com.netonstream，见 geolite4k/build.gradle.kts）
+                implementation("com.netonstream:geolite4k")
                 implementation("com.netonstream:neton-core")
                 implementation("com.netonstream:neton-routing")
                 implementation("com.netonstream:neton-security")

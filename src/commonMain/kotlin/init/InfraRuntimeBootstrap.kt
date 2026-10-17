@@ -78,6 +78,9 @@ object InfraRuntimeBootstrap {
         ctx.bind(MediaLogic::class, mediaLogic)
         ctx.bindIfAbsent(port.MediaService::class, mediaLogic)
 
+        // IP 属地（spec content-platform-architecture §5.6）：全套件唯一的默认实现，宿主先绑定自己的即可替换。
+        ctx.bindIfAbsent(contract.core.IpRegionResolver::class, GeoLiteIpRegionResolver.fromConfig())
+
         // 注册 API 日志写入器
         ctx.bind(AccessLogWriter::class, DbAccessLogWriter())
         ctx.bind(ErrorLogWriter::class, DbErrorLogWriter())
