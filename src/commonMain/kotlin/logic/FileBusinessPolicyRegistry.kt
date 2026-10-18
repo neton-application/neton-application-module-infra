@@ -1,5 +1,9 @@
 package logic
 
+import neton.core.http.BadRequestException
+import neton.core.http.ValidationError
+import port.InfraErrorCodes
+
 /**
  * `businessType` → [FileBusinessPolicy] 登记表（spec MODULE_MEMBER_PROFILE_SPEC §4.2；infra-media §3）。
  *
@@ -47,8 +51,9 @@ class FileBusinessPolicyRegistry(
 
     fun policyOrThrow(businessType: String): FileBusinessPolicy =
         policies[businessType]
-            ?: throw IllegalArgumentException(
-                "INVALID_BUSINESS_TYPE: '$businessType' not registered",
+            ?: throw BadRequestException(
+                InfraErrorCodes.INVALID_BUSINESS_TYPE,
+                listOf(ValidationError(path = "businessType", message = InfraErrorCodes.INVALID_BUSINESS_TYPE, code = InfraErrorCodes.INVALID_BUSINESS_TYPE)),
             )
 
     fun businessTypes(): Set<String> = policies.keys.toSet()

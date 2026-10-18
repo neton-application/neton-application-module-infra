@@ -349,7 +349,7 @@ class MediaLogic(
         val record = try {
             files.storeBytes(ownerUserId, businessType, MediaImportRules.filenameOf(target), mime, bytes)
         } catch (e: HttpException) {
-            val code = MediaErrorCode.entries.firstOrNull { e.message?.startsWith(it.name) == true }
+            val code = MediaErrorCode.entries.firstOrNull { it.name == e.message }
                 ?: MediaErrorCode.FETCH_FAILED
             return importRejected(code, e.message ?: code.name)
         }

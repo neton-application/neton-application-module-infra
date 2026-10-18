@@ -1,5 +1,6 @@
 package logic
 
+import port.InfraErrorCodes
 import controller.admin.log.dto.ApiErrorLogVO
 import dto.PageResponse
 import model.ApiErrorLog
@@ -49,7 +50,7 @@ class ApiErrorLogLogic(
 
     suspend fun updateStatus(id: Long, processStatus: Int, processUserId: Long) {
         val errorLog = ApiErrorLogTable.get(id)
-            ?: throw NotFoundException("Error log not found")
+            ?: throw NotFoundException(InfraErrorCodes.API_ERROR_LOG_NOT_FOUND)
         val updated = errorLog.copy(
             processStatus = processStatus,
             processUserId = processUserId,

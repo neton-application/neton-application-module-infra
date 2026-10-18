@@ -1,5 +1,6 @@
 package controller.app.infra.file
 
+import port.InfraErrorCodes
 import controller.app.infra.file.dto.FileUploadResponse
 import kotlinx.serialization.Serializable
 import logic.FileUploadLogic
@@ -53,7 +54,7 @@ class FileController(
         windowSeconds = 60,
         maxRequests = 30,
         scope = RateLimitScope.USER,
-        message = "Upload rate limit exceeded, please slow down",
+        message = InfraErrorCodes.UPLOAD_RATE_LIMITED,
     )
     suspend fun upload(
         identity: Identity,
@@ -62,16 +63,16 @@ class FileController(
         if (!request.isMultipart()) {
             throw HttpException(
                 code = NetonErrorCode.INVALID_PARAM_TYPE,
-                message = "INVALID_CONTENT_TYPE",
+                message = InfraErrorCodes.INVALID_CONTENT_TYPE,
             )
         }
         val files = request.uploadFiles()
         val file = files.first("file")
-            ?: throw BadRequestException("MISSING_FILE_FIELD", listOf(ValidationError(path = "file", message = "form field 'file' is required", code = "MISSING_FILE_FIELD")))
+            ?: throw BadRequestException(InfraErrorCodes.MISSING_FILE_FIELD, listOf(ValidationError(path = "file", message = InfraErrorCodes.MISSING_FILE_FIELD, code = InfraErrorCodes.MISSING_FILE_FIELD)))
 
         val form = request.form()
         val businessType = form["businessType"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw BadRequestException("MISSING_BUSINESS_TYPE", listOf(ValidationError(path = "businessType", message = "form field 'businessType' is required", code = "MISSING_BUSINESS_TYPE")))
+            ?: throw BadRequestException(InfraErrorCodes.MISSING_BUSINESS_TYPE, listOf(ValidationError(path = "businessType", message = InfraErrorCodes.MISSING_BUSINESS_TYPE, code = InfraErrorCodes.MISSING_BUSINESS_TYPE)))
 
         val record = fileLogic.upload(
             ownerUid = identity.id.toLong(),
@@ -108,7 +109,7 @@ class FileController(
         @Query sig: String? = null,
     ) {
         val record = fileLogic.getByFileId(fileId)
-            ?: throw NotFoundException("FILE_NOT_FOUND")
+            ?: throw NotFoundException(InfraErrorCodes.FILE_NOT_FOUND)
 
         val cacheControl: String
         if (record.status == 1 && media.verifySignature(fileId, exp, sig)) {
@@ -119,7 +120,7 @@ class FileController(
             if (!media.canRead(record, viewerUid)) {
                 throw HttpException(
                     code = NetonErrorCode.PERMISSION_DENIED,
-                    message = "FILE_FORBIDDEN",
+                    message = InfraErrorCodes.FILE_FORBIDDEN,
                 )
             }
             cacheControl = if (!media.isDelegated(record)) {

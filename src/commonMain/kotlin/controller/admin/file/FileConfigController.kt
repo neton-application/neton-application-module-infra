@@ -1,5 +1,6 @@
 package controller.admin.file
 
+import port.InfraErrorCodes
 import controller.admin.file.dto.CreateFileConfigRequest
 import controller.admin.file.dto.FileConfigVO
 import controller.admin.file.dto.UpdateFileConfigRequest
@@ -39,7 +40,7 @@ class FileConfigController(
     @Put("/update")
     @Permission("infra:file-config:update")
     suspend fun update(@Body request: UpdateFileConfigRequest) {
-        val existing = fileLogic.getFileConfig(request.id) ?: throw NotFoundException("File config not found")
+        val existing = fileLogic.getFileConfig(request.id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
         val fileConfig = existing.copy(
             name = request.name,
             storage = request.storage,

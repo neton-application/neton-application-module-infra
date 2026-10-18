@@ -1,10 +1,12 @@
 package logic
 
+import port.InfraErrorCodes
 import dto.PageResponse
 import kotlinx.serialization.Serializable
 import model.DomainEventRecord
 import neton.core.http.NotFoundException
-import neton.core.http.BadRequestException
+import neton.core.http.HttpException
+import neton.core.http.NetonErrorCode
 import neton.database.api.DbContext
 import neton.database.dsl.desc
 import neton.database.dsl.eq
@@ -53,7 +55,7 @@ class DomainEventOpsLogic(
     }
 
     suspend fun get(id: Long): DomainEventRecord =
-        DomainEventRecordTable.get(id) ?: throw NotFoundException("domain event $id not found")
+        DomainEventRecordTable.get(id) ?: throw NotFoundException(InfraErrorCodes.DOMAIN_EVENT_NOT_FOUND)
 
     /**
      * 积压指标。这些数字是 outbox 唯一的健康信号——投递器挂了、下游一直失败、
@@ -106,8 +108,8 @@ class DomainEventOpsLogic(
             mapOf("id" to id, "now" to t),
         )
         if (affected == 0L) {
-            val current = get(id)
-            throw BadRequestException("event $id is in status ${current.status}, only terminal failures (3) can be requeued")
+            get(id) // 不存在 → DOMAIN_EVENT_NOT_FOUND
+            throw HttpException(NetonErrorCode.OPERATION_NOT_ALLOWED, InfraErrorCodes.DOMAIN_EVENT_NOT_REQUEUEABLE)
         }
         log.info("event.ops.requeue", mapOf("id" to id))
         return get(id)
@@ -130,8 +132,8 @@ class DomainEventOpsLogic(
             mapOf("id" to id, "reason" to (reason?.take(500) ?: "discarded manually"), "now" to t),
         )
         if (affected == 0L) {
-            val current = get(id)
-            throw BadRequestException("event $id is in status ${current.status}, only pending (0) or failed (3) can be discarded")
+            get(id) // 不存在 → DOMAIN_EVENT_NOT_FOUND
+            throw HttpException(NetonErrorCode.OPERATION_NOT_ALLOWED, InfraErrorCodes.DOMAIN_EVENT_NOT_DISCARDABLE)
         }
         log.info("event.ops.discard", mapOf("id" to id, "reason" to reason))
         return get(id)

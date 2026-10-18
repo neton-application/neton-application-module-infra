@@ -115,6 +115,12 @@ tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64|MingwX64)"
 // outbox store + 媒体生命周期（infra-media §6）两组真实数据库契约，共用 EVENT_DB_URI。
 val postgresContractClasses = listOf("event.PostgresDomainEventStoreDbTest", "logic.MediaLogicDbTest")
 
+// 业务错误 message 守卫（共享夹具，见 neton-application-contract README「测试夹具」）
+kotlin.sourceSets.named("macosArm64Test") { kotlin.srcDir("../neton-application-contract/src/testFixtures/kotlin") }
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>().configureEach {
+    environment("NETON_MODULE_DIR", projectDir.absolutePath)
+}
+
 tasks.named<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>("macosArm64Test") {
     postgresContractClasses.forEach { filter.excludeTestsMatching(it) }
 }

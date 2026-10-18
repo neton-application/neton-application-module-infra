@@ -7,7 +7,9 @@ import kotlinx.coroutines.runBlocking
 import neton.core.config.getEnv
 import neton.core.event.PendingEventRecord
 import logic.DomainEventOpsLogic
-import neton.core.http.BadRequestException
+import neton.core.http.HttpException
+import neton.core.http.NetonErrorCode
+import port.InfraErrorCodes
 import neton.logging.Fields
 import neton.logging.Logger
 import neton.core.module.MigrationDialect
@@ -300,7 +302,10 @@ class PostgresDomainEventStoreDbTest {
 
         // 待投递的（第二条，status 0）不允许重投
         val other = db.fetchAll("SELECT id FROM infra_domain_events WHERE status = 0 AND id <> :id", mapOf("id" to c.id)).first().longOrNull("id")!!
-        assertFailsWith<BadRequestException> { ops(db).requeue(other) }
+        assertFailsWith<HttpException> { ops(db).requeue(other) }.let {
+            assertEquals(NetonErrorCode.OPERATION_NOT_ALLOWED, it.code)
+            assertEquals(InfraErrorCodes.DOMAIN_EVENT_NOT_REQUEUEABLE, it.message)
+        }
 
         val r = ops(db).requeue(c.id)
         assertEquals(0, r.status)
@@ -330,7 +335,10 @@ class PostgresDomainEventStoreDbTest {
         // delivering → refused
         val c2 = s.claimDue(now = 2_000, limit = 1, staleBefore = 0).single()
         assertEquals(1, db.statusOf(c2.id))
-        assertFailsWith<BadRequestException> { ops(db).discard(c2.id, "x") }
+        assertFailsWith<HttpException> { ops(db).discard(c2.id, "x") }.let {
+            assertEquals(NetonErrorCode.OPERATION_NOT_ALLOWED, it.code)
+            assertEquals(InfraErrorCodes.DOMAIN_EVENT_NOT_DISCARDABLE, it.message)
+        }
 
         // 已丢弃的不会被领取
         assertTrue(s.claimDue(now = 100_000, limit = 10, staleBefore = 99_000).none { it.id == ids[0] })

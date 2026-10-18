@@ -1,5 +1,6 @@
 package controller.admin.job
 
+import port.InfraErrorCodes
 import controller.admin.job.dto.CreateJobRequest
 import controller.admin.job.dto.JobVO
 import controller.admin.job.dto.UpdateJobRequest
@@ -41,7 +42,7 @@ class JobController(
     @Put("/update")
     @Permission("infra:job:update")
     suspend fun update(@Body request: UpdateJobRequest) {
-        val existing = jobLogic.getJob(request.id) ?: throw NotFoundException("Job not found")
+        val existing = jobLogic.getJob(request.id) ?: throw NotFoundException(InfraErrorCodes.JOB_NOT_FOUND)
         val job = existing.copy(
             name = request.name,
             handlerName = request.handlerName,
@@ -92,7 +93,7 @@ class JobController(
     @Put("/trigger/{id}")
     @Permission("infra:job:trigger")
     suspend fun trigger(@PathVariable id: Long) {
-        val job = jobLogic.getJob(id) ?: throw NotFoundException("Job not found")
+        val job = jobLogic.getJob(id) ?: throw NotFoundException(InfraErrorCodes.JOB_NOT_FOUND)
         // 立即触发一次（忽略 enabled 开关，仍走 SINGLE_NODE 锁）。handler 不存在则 scheduler 内部忽略。
         scheduler.trigger(job.handlerName)
         log.info("job.trigger", mapOf("id" to id, "handler" to job.handlerName))

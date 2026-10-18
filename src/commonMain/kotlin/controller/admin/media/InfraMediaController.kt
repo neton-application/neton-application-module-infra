@@ -1,5 +1,6 @@
 package controller.admin.media
 
+import port.InfraErrorCodes
 import controller.app.infra.file.dto.FileUploadResponse
 import logic.FileUploadLogic
 import logic.MediaLogic
@@ -45,21 +46,21 @@ class InfraMediaController(
         windowSeconds = 60,
         maxRequests = 60,
         scope = RateLimitScope.USER,
-        message = "Upload rate limit exceeded, please slow down",
+        message = InfraErrorCodes.UPLOAD_RATE_LIMITED,
     )
     suspend fun upload(identity: Identity, request: HttpRequest): FileUploadResponse {
         if (!request.isMultipart()) {
             throw HttpException(
                 code = NetonErrorCode.INVALID_PARAM_TYPE,
-                message = "INVALID_CONTENT_TYPE",
+                message = InfraErrorCodes.INVALID_CONTENT_TYPE,
             )
         }
         val file = request.uploadFiles().first("file")
-            ?: throw BadRequestException("MISSING_FILE_FIELD", listOf(ValidationError(path = "file", message = "form field 'file' is required", code = "MISSING_FILE_FIELD")))
+            ?: throw BadRequestException(InfraErrorCodes.MISSING_FILE_FIELD, listOf(ValidationError(path = "file", message = InfraErrorCodes.MISSING_FILE_FIELD, code = InfraErrorCodes.MISSING_FILE_FIELD)))
         val businessType = request.form()["businessType"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw BadRequestException("MISSING_BUSINESS_TYPE", listOf(ValidationError(path = "businessType", message = "form field 'businessType' is required", code = "MISSING_BUSINESS_TYPE")))
+            ?: throw BadRequestException(InfraErrorCodes.MISSING_BUSINESS_TYPE, listOf(ValidationError(path = "businessType", message = InfraErrorCodes.MISSING_BUSINESS_TYPE, code = InfraErrorCodes.MISSING_BUSINESS_TYPE)))
         val adminUserId = identity.id.toLongOrNull()
-            ?: throw HttpException(NetonErrorCode.PERMISSION_DENIED, "INVALID_ADMIN_IDENTITY")
+            ?: throw HttpException(NetonErrorCode.PERMISSION_DENIED, InfraErrorCodes.INVALID_ADMIN_IDENTITY)
 
         val record = files.uploadAsAdmin(adminUserId, businessType, file)
         return FileUploadResponse(
@@ -76,8 +77,8 @@ class InfraMediaController(
     @Get("/get/{fileId}")
     @Permission("infra:media:query")
     suspend fun get(response: HttpResponse, @PathVariable fileId: String) {
-        val record = files.getByFileId(fileId) ?: throw NotFoundException("FILE_NOT_FOUND")
-        if (!media.isAdminReadable(record)) throw NotFoundException("FILE_DELETED")
+        val record = files.getByFileId(fileId) ?: throw NotFoundException(InfraErrorCodes.FILE_NOT_FOUND)
+        if (!media.isAdminReadable(record)) throw NotFoundException(InfraErrorCodes.FILE_DELETED)
 
         val bytes = files.readBytes(record)
         val mime = record.mimeType ?: "application/octet-stream"
