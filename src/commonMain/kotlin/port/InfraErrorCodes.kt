@@ -63,10 +63,14 @@ object InfraErrorCodes {
     const val INVALID_ARGUMENT = "INVALID_ARGUMENT"
     /** 转存地址无效。 */
     const val INVALID_URL = "INVALID_URL"
-    /** 转存地址不是 http/https。 */
-    const val UNSUPPORTED_SCHEME = "UNSUPPORTED_SCHEME"
-    /** 转存地址指向内网 / 本机等禁止的主机。 */
-    const val FORBIDDEN_HOST = "FORBIDDEN_HOST"
+    /** 不可信地址不是 http/https。 */
+    const val URL_SCHEME_FORBIDDEN = "URL_SCHEME_FORBIDDEN"
+    /** 不可信地址的主机是 / 解析到非公网地址（本机、内网、链路本地、保留段…），或是非规范的 IP 字面量。 */
+    const val URL_TARGET_FORBIDDEN = "URL_TARGET_FORBIDDEN"
+    /** 不可信地址的端口不在放行列表（默认 80 / 443）。 */
+    const val URL_PORT_FORBIDDEN = "URL_PORT_FORBIDDEN"
+    /** 不可信地址的主机名解析失败。 */
+    const val URL_RESOLVE_FAILED = "URL_RESOLVE_FAILED"
     /** 拉取远端文件失败。 */
     const val FETCH_FAILED = "FETCH_FAILED"
     /** 本部署没有出站 HTTP 客户端。 */

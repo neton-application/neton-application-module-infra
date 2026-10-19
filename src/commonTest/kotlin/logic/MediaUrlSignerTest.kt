@@ -59,16 +59,15 @@ class MediaUrlSignerTest {
     fun urlChecks() {
         assertTrue(MediaImportRules.checkUrl("https://example.com/a.png").ok)
         assertTrue(MediaImportRules.checkUrl("HTTP://example.com:8080/a.png?x=1").ok)
-        assertEquals(MediaErrorCode.UNSUPPORTED_SCHEME, MediaImportRules.checkUrl("ftp://example.com/a").code)
-        assertEquals(MediaErrorCode.UNSUPPORTED_SCHEME, MediaImportRules.checkUrl("file:///etc/passwd").code)
+        assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, MediaImportRules.checkUrl("ftp://example.com/a").code)
+        assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, MediaImportRules.checkUrl("file:///etc/passwd").code)
+        assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, MediaImportRules.checkUrl("javascript:alert(1)").code)
         assertEquals(MediaErrorCode.INVALID_URL, MediaImportRules.checkUrl("example.com/a").code)
         assertEquals(MediaErrorCode.INVALID_URL, MediaImportRules.checkUrl("https://user:pw@example.com/").code)
-        listOf(
-            "http://localhost/", "http://127.0.0.1/", "http://10.1.2.3/", "http://192.168.1.1/",
-            "http://172.20.0.1/", "http://169.254.169.254/latest", "http://[::1]/", "http://0177.0.0.1/",
-            "http://2130706433/", "http://0x7f000001/", "http://metadata.internal/",
-        ).forEach { assertEquals(MediaErrorCode.FORBIDDEN_HOST, MediaImportRules.checkUrl(it).code, it) }
-        assertTrue(MediaImportRules.checkUrl("http://172.32.0.1/").ok)
+        assertEquals(MediaErrorCode.INVALID_URL, MediaImportRules.checkUrl("https://exa mple.com/").code)
+        assertEquals(MediaErrorCode.INVALID_URL, MediaImportRules.checkUrl("https:///a").code)
+        // 目标地址（内网、回环、非规范 IP 写法、端口）不在语法检查里判断，由不可信 URL 客户端按解析结果拒绝
+        assertTrue(MediaImportRules.checkUrl("http://127.0.0.1/").ok)
     }
 
     @Test

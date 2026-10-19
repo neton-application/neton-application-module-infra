@@ -42,6 +42,7 @@ class MediaLogic(
     private val signer: MediaUrlSigner,
     /** 请求时读取：由套件模块在 infra 之后绑定，不能在 bootstrap 捕获。 */
     private val ownerAccess: () -> MediaOwnerAccess?,
+    /** 转存用的出站客户端：必须是不可信 URL 客户端（[port.UntrustedHttpClient]），地址来自用户 / 外部内容。 */
     private val httpClient: () -> HttpClient?,
     private val importConfig: ImportConfig = ImportConfig(),
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
@@ -332,6 +333,11 @@ class MediaLogic(
         } catch (e: ImportTooLarge) {
             return importRejected(MediaErrorCode.FILE_TOO_LARGE, "remote file exceeds ${policy.maxSizeBytes} bytes")
         } catch (e: HttpClientException) {
+            val refused = port.UntrustedHttpClient.rejectionCode(e.error)
+            if (refused != null) {
+                log.warn("media.import.target-refused", mapOf("businessType" to businessType, "code" to refused.name, "error" to e.error.message))
+                return importRejected(refused, refused.name)
+            }
             log.warn("media.import.fetch-failed", mapOf("businessType" to businessType, "error" to e.error.message))
             return importRejected(MediaErrorCode.FETCH_FAILED, "failed to fetch remote file")
         }

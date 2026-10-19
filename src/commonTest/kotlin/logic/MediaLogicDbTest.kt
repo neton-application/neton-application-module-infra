@@ -15,6 +15,7 @@ import neton.database.migration.MigrationCommand
 import neton.database.migration.MigrationConfig
 import neton.database.migration.MigrationEngine
 import neton.database.migration.MigrationResult
+import neton.http.client.create
 import neton.logging.Fields
 import neton.logging.Logger
 import neton.storage.FileEntry
@@ -120,7 +121,7 @@ class MediaLogicDbTest {
         override suspend fun presignWrite(path: String, ttl: Duration): String = throw UnsupportedOperationException()
     }
 
-    private class Fixture(db: DbContext) {
+    private class Fixture(db: DbContext, http: () -> neton.http.client.HttpClient? = { null }) {
         val storage = MemoryStorage()
         val registry = FileBusinessPolicyRegistry.default().apply {
             register(
@@ -147,7 +148,7 @@ class MediaLogicDbTest {
             files = files,
             signer = MediaUrlSigner(MediaUrlSigner.deriveKey("k".repeat(40)), nowSeconds = { clockSeconds }),
             ownerAccess = { access },
-            httpClient = { null },
+            httpClient = http,
         )
     }
 
@@ -421,7 +422,46 @@ class MediaLogicDbTest {
         val fx = Fixture(db)
         val r = fx.media.importFromUrl("content.image", "https://example.com/a.png", 7)
         assertEquals(MediaErrorCode.NOT_AVAILABLE, assertIs<ImportResult.Rejected>(r).code)
-        val bad = fx.media.importFromUrl("content.image", "http://127.0.0.1/a.png", 7)
-        assertEquals(MediaErrorCode.FORBIDDEN_HOST, assertIs<ImportResult.Rejected>(bad).code)
+        val bad = fx.media.importFromUrl("content.image", "ftp://example.com/a.png", 7)
+        assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, assertIs<ImportResult.Rejected>(bad).code)
+    }
+
+    /**
+     * 转存走不可信 URL 客户端：目标在连接前按**解析结果**校验，被拒时返回机器码，不发任何请求。
+     * 解析器注入：别名域名解析到回环、混合应答、解析失败都不需要真实 DNS。
+     */
+    @Test
+    fun importRefusesInternalTargetsByResolvedAddress() = withMigratedDatabase { db ->
+        val table = mapOf(
+            "alias.test" to listOf("127.0.0.1"),
+            "metadata.test" to listOf("169.254.169.254"),
+            "mixed.test" to listOf("93.184.216.34", "10.0.0.7"),
+            "fakeip.test" to listOf("198.18.0.20"),
+        )
+        val client = neton.http.client.HttpClient.create {
+            addressPolicy = neton.http.client.OutboundAddressPolicy()
+            hostResolver = neton.http.client.HostResolver { host ->
+                table[host]?.map { neton.http.client.IpAddress.parse(it)!! } ?: error("NXDOMAIN $host")
+            }
+        }
+        try {
+            val fx = Fixture(db) { client }
+            suspend fun code(url: String) = assertIs<ImportResult.Rejected>(fx.media.importFromUrl("content.image", url, 7), url).code
+            for (url in listOf(
+                "http://alias.test/a.png", "https://metadata.test/latest/meta-data", "http://mixed.test/a.png",
+                "http://fakeip.test/a.png", "http://127.0.0.1/a.png", "http://2130706433/a.png", "http://0x7f.1/a.png",
+                "http://127.1/a.png", "http://[::ffff:127.0.0.1]/a.png", "http://[::1]/a.png", "http://[fd00::1]/a.png",
+                "http://[64:ff9b::a9fe:a9fe]/a.png", "http://alias.test./a.png", "http://ALIAS.test/a.png",
+            )) {
+                assertEquals(MediaErrorCode.URL_TARGET_FORBIDDEN, code(url), url)
+            }
+            assertEquals(MediaErrorCode.URL_PORT_FORBIDDEN, code("http://93.184.216.34:8080/a.png"))
+            assertEquals(MediaErrorCode.URL_PORT_FORBIDDEN, code("http://alias.test:6379/"))
+            assertEquals(MediaErrorCode.URL_RESOLVE_FAILED, code("https://nx.test/a.png"))
+            assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, code("file:///etc/passwd"))
+            assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, code("gopher://alias.test/"))
+        } finally {
+            client.close()
+        }
     }
 }

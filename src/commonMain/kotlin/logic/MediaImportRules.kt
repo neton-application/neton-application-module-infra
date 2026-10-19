@@ -10,62 +10,41 @@ object MediaImportRules {
     data class UrlCheck(val ok: Boolean, val code: MediaErrorCode? = null, val message: String = "")
 
     /**
-     * 只允许 http / https；拒绝带用户信息的地址和明显指向本机 / 内网的字面地址。
+     * 不可信 URL 的**语法**检查：只允许 http / https，拒绝带用户信息、空白与超长的地址。
      *
-     * 🔴 这里只能挡住**字面**地址；域名解析到内网（DNS rebinding）和上游重定向到内网需要
-     * 出站代理或网络层出口策略兜底，不在本函数能力范围内。
+     * 目标地址（本机 / 内网 / 保留段、非规范 IP 写法、端口）**不在这里判断**：只看字面主机名挡不住解析到内网的域名，
+     * 也挡不住校验与连接之间被换掉的解析结果。那由 [port.UntrustedHttpClient] 的客户端在每条连接上解析、
+     * 校验全部地址、只连校验过的地址来保证（neton-http `OutboundAddressPolicy`）。
      */
     fun checkUrl(url: String): UrlCheck {
         val trimmed = url.trim()
         if (trimmed.isEmpty() || trimmed.length > 2048) return fail(MediaErrorCode.INVALID_URL, "url is empty or too long")
         val schemeEnd = trimmed.indexOf("://")
-        if (schemeEnd <= 0) return fail(MediaErrorCode.INVALID_URL, "url has no scheme")
+        if (schemeEnd <= 0) {
+            // file:/etc/passwd、javascript:… 这类没有 // 的写法同样是不允许的 scheme
+            val colon = trimmed.indexOf(':')
+            if (colon > 0 && trimmed.substring(0, colon).all { it.isLetterOrDigit() || it in "+.-" }) {
+                return fail(MediaErrorCode.URL_SCHEME_FORBIDDEN, "only http/https is allowed")
+            }
+            return fail(MediaErrorCode.INVALID_URL, "url has no scheme")
+        }
         val scheme = trimmed.substring(0, schemeEnd).lowercase()
         if (scheme != "http" && scheme != "https") {
-            return fail(MediaErrorCode.UNSUPPORTED_SCHEME, "only http/https is allowed")
+            return fail(MediaErrorCode.URL_SCHEME_FORBIDDEN, "only http/https is allowed")
         }
         val rest = trimmed.substring(schemeEnd + 3)
         val authority = rest.substringBefore('/').substringBefore('?').substringBefore('#')
         if (authority.isEmpty()) return fail(MediaErrorCode.INVALID_URL, "url has no host")
         if ('@' in authority) return fail(MediaErrorCode.INVALID_URL, "userinfo in url is not allowed")
         if (trimmed.any { it.isWhitespace() || it.code < 0x20 }) return fail(MediaErrorCode.INVALID_URL, "url contains whitespace")
-        val host = hostOf(authority).lowercase().trimEnd('.')
+        val host = hostOf(authority).trimEnd('.')
         if (host.isEmpty()) return fail(MediaErrorCode.INVALID_URL, "url has no host")
-        if (isForbiddenHost(host)) return fail(MediaErrorCode.FORBIDDEN_HOST, "host is not allowed")
         return UrlCheck(true)
     }
 
     private fun hostOf(authority: String): String =
         if (authority.startsWith("[")) authority.substringAfter('[').substringBefore(']')
         else authority.substringBefore(':')
-
-    fun isForbiddenHost(host: String): Boolean {
-        if (host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
-            return true
-        }
-        // IPv6 字面量：回环、未指定、链路本地、唯一本地、IPv4 映射
-        if (':' in host) {
-            val h = host.lowercase()
-            return h == "::1" || h == "::" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd") ||
-                h.startsWith("::ffff:")
-        }
-        val parts = host.split('.')
-        if (parts.size == 4 && parts.all { p -> p.isNotEmpty() && p.all { it.isDigit() } }) {
-            // 带前导零的写法可能被解析成八进制（0177.0.0.1 = 127.0.0.1），直接拒绝
-            if (parts.any { it.length > 1 && it.startsWith('0') }) return true
-            val o = parts.map { it.toIntOrNull() ?: return true }
-            if (o.any { it > 255 }) return true
-            return o[0] == 0 || o[0] == 10 || o[0] == 127 ||
-                (o[0] == 169 && o[1] == 254) ||
-                (o[0] == 172 && o[1] in 16..31) ||
-                (o[0] == 192 && o[1] == 168) ||
-                (o[0] == 100 && o[1] in 64..127) ||
-                o[0] >= 224
-        }
-        // 纯数字 / 十六进制写法的 IPv4（如 2130706433、0x7f000001）一律拒绝
-        if (host.all { it.isDigit() } || HEX_HOST.matches(host)) return true
-        return false
-    }
 
     /** 按文件头识别常见类型；识别不了返回 null。 */
     fun sniffMime(bytes: ByteArray): String? {
@@ -100,8 +79,6 @@ object MediaImportRules {
         val safe = last.filter { it.isLetterOrDigit() || it == '.' || it == '-' || it == '_' }.take(100)
         return safe.ifEmpty { "import" }
     }
-
-    private val HEX_HOST = Regex("^0x[0-9a-f]+$")
 
     private fun fail(code: MediaErrorCode, message: String) = UrlCheck(false, code, message)
 }

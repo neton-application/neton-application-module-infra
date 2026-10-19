@@ -61,8 +61,42 @@ object InfraRuntimeBootstrap {
         )
         ctx.bind(FileUploadLogic::class, fileUploadLogic)
 
+        // 不可信 URL 出站客户端（转存、采集等抓取用户 / 外部内容给的地址）：每条连接解析、校验全部地址、只连校验过的地址。
+        // 宿主可先绑定自己的；默认按 infra.conf [untrusted_fetch] 建，经应用绑定的 HttpClientProvider（模块不带引擎）。
+        if (ctx.getOrNull(port.UntrustedHttpClient::class) == null) {
+            val untrusted = UntrustedFetchSettings.load()
+            val untrustedLog = loggerFactory.get("infra.untrusted-fetch")
+            val policy = untrusted.policy()
+            if (policy.isRelaxed) {
+                // 逃生口打开 = 这些主机 / 网段可以被不可信 URL 打到。只该出现在本地开发。
+                untrustedLog.warn(
+                    "infra.untrusted-fetch.allowlist-enabled",
+                    mapOf(
+                        "allowedHosts" to policy.allowedHosts.joinToString(","),
+                        "allowedNetworks" to policy.allowedNetworks.joinToString(","),
+                        "allowedPorts" to policy.allowedPorts.sorted().joinToString(","),
+                    ),
+                )
+            } else {
+                untrustedLog.info("infra.untrusted-fetch.policy", mapOf("allowedPorts" to policy.allowedPorts.sorted().joinToString(",")))
+            }
+            val holder = port.UntrustedHttpClient(policy) { p ->
+                ctx.getOrNull(neton.http.client.HttpClientProvider::class)?.create {
+                    addressPolicy = p
+                    connectMillis = untrusted.connectMillis
+                }
+            }
+            ctx.bind(port.UntrustedHttpClient::class, holder)
+            ctx.lifecycle.register("infra-untrusted-http-client", object : neton.core.component.NetonLifecycle {
+                override suspend fun start() = Unit
+                override suspend fun stop() = holder.close()
+            })
+        }
+        val untrustedHttp = ctx.get(port.UntrustedHttpClient::class)
+
         // 媒体关联 / 访问契约（infra-media §6 / §7）。签名密钥从 JWT 密钥按用途派生，不新增配置。
-        // MediaOwnerAccess、HttpClient 在请求时读取：前者由 infra 之后装配的模块绑定。
+        // MediaOwnerAccess、出站客户端在请求时读取：前者由 infra 之后装配的模块绑定。
+        // 转存的地址来自用户 / 采集内容，只走不可信 URL 客户端。
         val mediaLogic = MediaLogic(
             log = loggerFactory.get("logic.media"),
             db = db,
@@ -73,7 +107,7 @@ object InfraRuntimeBootstrap {
                 nowSeconds = { kotlin.time.Clock.System.now().epochSeconds },
             ),
             ownerAccess = { ctx.getOrNull(port.MediaOwnerAccess::class) },
-            httpClient = { ctx.getOrNull(neton.http.client.HttpClient::class) },
+            httpClient = { untrustedHttp.client },
         )
         ctx.bind(MediaLogic::class, mediaLogic)
         ctx.bindIfAbsent(port.MediaService::class, mediaLogic)
