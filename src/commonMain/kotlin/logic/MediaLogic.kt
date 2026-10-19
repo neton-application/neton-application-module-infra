@@ -7,6 +7,7 @@ import neton.database.api.DbContext
 import neton.database.api.Row
 import neton.database.dsl.*
 import neton.http.client.HttpClient
+import neton.http.client.HttpClientError
 import neton.http.client.HttpClientException
 import neton.http.client.HttpClientMethod
 import neton.http.client.HttpClientRequest
@@ -292,54 +293,81 @@ class MediaLogic(
         val client = httpClient()
             ?: return importRejected(MediaErrorCode.NOT_AVAILABLE, "no outbound HTTP client is bound in this deployment")
 
-        val target = url.trim()
+        // 跟随重定向（CDN 常见 301/302 到真实存储域名）：最多 MAX_IMPORT_REDIRECTS 跳，每一跳都重新做语法检查
+        // （只许 http / https），并且照样经不可信 URL 客户端发出——新主机在连接前重新解析、校验全部地址，
+        // 第一跳是公网、第二跳 302 到 127.0.0.1 / 169.254.169.254 一样被拒。
+        var target = url.trim()
+        var redirects = 0
         val chunks = mutableListOf<ByteArray>()
         var total = 0L
         var declaredMime: String? = null
-        try {
-            client.stream(
-                HttpClientRequest(
-                    method = HttpClientMethod.Get,
-                    url = target,
-                    timeout = HttpClientTimeouts(
-                        connectMillis = importConfig.connectMillis,
-                        requestMillis = importConfig.requestMillis,
-                        socketMillis = importConfig.socketMillis,
+        while (true) {
+            chunks.clear()
+            total = 0L
+            declaredMime = null
+            val location: String = try {
+                client.stream(
+                    HttpClientRequest(
+                        method = HttpClientMethod.Get,
+                        url = target,
+                        timeout = HttpClientTimeouts(
+                            connectMillis = importConfig.connectMillis,
+                            requestMillis = importConfig.requestMillis,
+                            socketMillis = importConfig.socketMillis,
+                        ),
+                        metadata = mapOf("purpose" to "infra.media.import"),
                     ),
-                    metadata = mapOf("purpose" to "infra.media.import"),
-                ),
-            ).collect { chunk ->
-                when (chunk) {
-                    is HttpClientStreamChunk.Start -> {
-                        declaredMime = chunk.headers["Content-Type"]
-                        val declaredLength = chunk.headers["Content-Length"]?.trim()?.toLongOrNull()
-                        if (declaredLength != null && declaredLength > policy.maxSizeBytes) throw ImportTooLarge()
+                ).collect { chunk ->
+                    when (chunk) {
+                        is HttpClientStreamChunk.Start -> {
+                            declaredMime = chunk.headers["Content-Type"]
+                            val declaredLength = chunk.headers["Content-Length"]?.trim()?.toLongOrNull()
+                            if (declaredLength != null && declaredLength > policy.maxSizeBytes) throw ImportTooLarge()
+                        }
+                        is HttpClientStreamChunk.Bytes -> {
+                            total += chunk.bytes.size
+                            // 边读边判，超限立刻取消，不把整个大文件读进内存
+                            if (total > policy.maxSizeBytes) throw ImportTooLarge()
+                            chunks += chunk.bytes
+                        }
+                        is HttpClientStreamChunk.Text -> {
+                            val b = chunk.text.encodeToByteArray()
+                            total += b.size
+                            if (total > policy.maxSizeBytes) throw ImportTooLarge()
+                            chunks += b
+                        }
+                        is HttpClientStreamChunk.End -> Unit
                     }
-                    is HttpClientStreamChunk.Bytes -> {
-                        total += chunk.bytes.size
-                        // 边读边判，超限立刻取消，不把整个大文件读进内存
-                        if (total > policy.maxSizeBytes) throw ImportTooLarge()
-                        chunks += chunk.bytes
-                    }
-                    is HttpClientStreamChunk.Text -> {
-                        val b = chunk.text.encodeToByteArray()
-                        total += b.size
-                        if (total > policy.maxSizeBytes) throw ImportTooLarge()
-                        chunks += b
-                    }
-                    is HttpClientStreamChunk.End -> Unit
                 }
+                break
+            } catch (e: ImportTooLarge) {
+                return importRejected(MediaErrorCode.FILE_TOO_LARGE, "remote file exceeds ${policy.maxSizeBytes} bytes")
+            } catch (e: HttpClientException) {
+                val refused = port.UntrustedHttpClient.rejectionCode(e.error)
+                if (refused != null) {
+                    log.warn(
+                        "media.import.target-refused",
+                        mapOf("businessType" to businessType, "code" to refused.name, "hop" to redirects, "error" to e.error.message),
+                    )
+                    return importRejected(refused, refused.name)
+                }
+                val http = e.error as? HttpClientError.Http
+                val next = http?.takeIf { it.statusCode in REDIRECT_STATUSES }?.headers?.get("Location")?.trim()?.takeIf { it.isNotEmpty() }
+                if (next == null) {
+                    log.warn("media.import.fetch-failed", mapOf("businessType" to businessType, "hop" to redirects, "error" to e.error.message))
+                    return importRejected(MediaErrorCode.FETCH_FAILED, "failed to fetch remote file")
+                }
+                next
             }
-        } catch (e: ImportTooLarge) {
-            return importRejected(MediaErrorCode.FILE_TOO_LARGE, "remote file exceeds ${policy.maxSizeBytes} bytes")
-        } catch (e: HttpClientException) {
-            val refused = port.UntrustedHttpClient.rejectionCode(e.error)
-            if (refused != null) {
-                log.warn("media.import.target-refused", mapOf("businessType" to businessType, "code" to refused.name, "error" to e.error.message))
-                return importRejected(refused, refused.name)
+            if (++redirects > MAX_IMPORT_REDIRECTS) {
+                log.warn("media.import.too-many-redirects", mapOf("businessType" to businessType, "url" to url))
+                return importRejected(MediaErrorCode.TOO_MANY_REDIRECTS, "more than $MAX_IMPORT_REDIRECTS redirects")
             }
-            log.warn("media.import.fetch-failed", mapOf("businessType" to businessType, "error" to e.error.message))
-            return importRejected(MediaErrorCode.FETCH_FAILED, "failed to fetch remote file")
+            val resolved = MediaImportRules.resolveRedirect(target, location)
+                ?: return importRejected(MediaErrorCode.INVALID_URL, "invalid redirect target")
+            val hop = MediaImportRules.checkUrl(resolved)
+            if (!hop.ok) return importRejected(hop.code!!, hop.message)
+            target = resolved
         }
 
         if (total == 0L) return importRejected(MediaErrorCode.EMPTY_FILE, "remote file is empty")
@@ -554,6 +582,12 @@ class MediaLogic(
 
     companion object {
         private const val IN_CHUNK = 200
+
+        /** 转存最多跟随的重定向跳数。 */
+        private const val MAX_IMPORT_REDIRECTS = 5
+
+        /** 跟随的重定向状态码（GET 原样重发）。 */
+        private val REDIRECT_STATUSES = setOf(301, 302, 303, 307, 308)
 
         /** 生成 `:f0, :f1, …` 占位符与参数表；值走参数绑定，不拼进 SQL。 */
         fun inClause(prefix: String, values: List<String>): Pair<String, Map<String, Any?>> {

@@ -115,6 +115,8 @@ enum class MediaErrorCode {
     URL_TARGET_FORBIDDEN,
     URL_PORT_FORBIDDEN,
     URL_RESOLVE_FAILED,
+    /** 跟随重定向超过上限（5 跳）。 */
+    TOO_MANY_REDIRECTS,
     FETCH_FAILED,
     FILE_TOO_LARGE,
     INVALID_MIME_TYPE,

@@ -71,6 +71,8 @@ object InfraErrorCodes {
     const val URL_PORT_FORBIDDEN = "URL_PORT_FORBIDDEN"
     /** 不可信地址的主机名解析失败。 */
     const val URL_RESOLVE_FAILED = "URL_RESOLVE_FAILED"
+    /** 转存跟随重定向超过上限（5 跳）。 */
+    const val TOO_MANY_REDIRECTS = "TOO_MANY_REDIRECTS"
     /** 拉取远端文件失败。 */
     const val FETCH_FAILED = "FETCH_FAILED"
     /** 本部署没有出站 HTTP 客户端。 */

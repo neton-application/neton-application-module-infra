@@ -42,6 +42,33 @@ object MediaImportRules {
         return UrlCheck(true)
     }
 
+    /**
+     * 重定向 `Location` 相对 [base] 解析成绝对地址（RFC 3986 §5.2 的常见形态：绝对地址、`//host/path`、`/path`、
+     * `path`、`?query`）；解析不出返回 null。结果仍要过 [checkUrl] 与不可信 URL 客户端。
+     */
+    fun resolveRedirect(base: String, location: String): String? {
+        val loc = location.trim()
+        if (loc.isEmpty()) return null
+        // 带 scheme 的绝对 URI（http://…、ftp://…、javascript:…）原样返回，非 http(s) 交给 checkUrl 拒绝
+        if (ABSOLUTE_URI.containsMatchIn(loc)) return loc
+        val baseSchemeEnd = base.indexOf("://")
+        if (baseSchemeEnd <= 0) return null
+        val scheme = base.substring(0, baseSchemeEnd)
+        val afterScheme = base.substring(baseSchemeEnd + 3)
+        val authorityEnd = afterScheme.indexOfFirst { it == '/' || it == '?' || it == '#' }.let { if (it < 0) afterScheme.length else it }
+        val origin = "$scheme://" + afterScheme.substring(0, authorityEnd)
+        val basePath = afterScheme.substring(authorityEnd).substringBefore('#').substringBefore('?').ifEmpty { "/" }
+        return when {
+            loc.startsWith("//") -> "$scheme:$loc"
+            loc.startsWith("/") -> origin + loc
+            loc.startsWith("?") -> origin + basePath + loc
+            loc.startsWith("#") -> origin + basePath
+            else -> origin + basePath.substringBeforeLast('/') + "/" + loc
+        }
+    }
+
+    private val ABSOLUTE_URI = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
+
     private fun hostOf(authority: String): String =
         if (authority.startsWith("[")) authority.substringAfter('[').substringBefore(']')
         else authority.substringBefore(':')

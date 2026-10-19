@@ -20,7 +20,7 @@ class InfraErrorCodesTest {
             InfraErrorCodes.USAGE_NOT_ALLOWED, InfraErrorCodes.NOT_FILE_OWNER, InfraErrorCodes.NOT_REUSABLE,
             InfraErrorCodes.ACCESS_DENIED, InfraErrorCodes.INVALID_ARGUMENT, InfraErrorCodes.INVALID_BUSINESS_TYPE,
             InfraErrorCodes.INVALID_URL, InfraErrorCodes.URL_SCHEME_FORBIDDEN, InfraErrorCodes.URL_TARGET_FORBIDDEN,
-            InfraErrorCodes.URL_PORT_FORBIDDEN, InfraErrorCodes.URL_RESOLVE_FAILED,
+            InfraErrorCodes.URL_PORT_FORBIDDEN, InfraErrorCodes.URL_RESOLVE_FAILED, InfraErrorCodes.TOO_MANY_REDIRECTS,
             InfraErrorCodes.FETCH_FAILED, InfraErrorCodes.FILE_TOO_LARGE, InfraErrorCodes.INVALID_MIME_TYPE,
             InfraErrorCodes.EMPTY_FILE, InfraErrorCodes.NOT_AVAILABLE,
         )

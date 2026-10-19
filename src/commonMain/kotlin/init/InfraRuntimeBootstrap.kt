@@ -62,29 +62,11 @@ object InfraRuntimeBootstrap {
         ctx.bind(FileUploadLogic::class, fileUploadLogic)
 
         // 不可信 URL 出站客户端（转存、采集等抓取用户 / 外部内容给的地址）：每条连接解析、校验全部地址、只连校验过的地址。
-        // 宿主可先绑定自己的；默认按 infra.conf [untrusted_fetch] 建，经应用绑定的 HttpClientProvider（模块不带引擎）。
+        // 宿主可先绑定自己的；默认由全进程唯一的 GuardedHttpClientProvider 建（module-system 按 application.conf
+        // [egress] 绑定，放行列表与启动 WARN 都在那里，infra 不另设一份）。
         if (ctx.getOrNull(port.UntrustedHttpClient::class) == null) {
-            val untrusted = UntrustedFetchSettings.load()
-            val untrustedLog = loggerFactory.get("infra.untrusted-fetch")
-            val policy = untrusted.policy()
-            if (policy.isRelaxed) {
-                // 逃生口打开 = 这些主机 / 网段可以被不可信 URL 打到。只该出现在本地开发。
-                untrustedLog.warn(
-                    "infra.untrusted-fetch.allowlist-enabled",
-                    mapOf(
-                        "allowedHosts" to policy.allowedHosts.joinToString(","),
-                        "allowedNetworks" to policy.allowedNetworks.joinToString(","),
-                        "allowedPorts" to policy.allowedPorts.sorted().joinToString(","),
-                    ),
-                )
-            } else {
-                untrustedLog.info("infra.untrusted-fetch.policy", mapOf("allowedPorts" to policy.allowedPorts.sorted().joinToString(",")))
-            }
-            val holder = port.UntrustedHttpClient(policy) { p ->
-                ctx.getOrNull(neton.http.client.HttpClientProvider::class)?.create {
-                    addressPolicy = p
-                    connectMillis = untrusted.connectMillis
-                }
+            val holder = port.UntrustedHttpClient {
+                ctx.getOrNull(neton.http.client.GuardedHttpClientProvider::class)?.create { connectMillis = 5_000 }
             }
             ctx.bind(port.UntrustedHttpClient::class, holder)
             ctx.lifecycle.register("infra-untrusted-http-client", object : neton.core.component.NetonLifecycle {

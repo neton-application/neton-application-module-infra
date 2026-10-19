@@ -464,4 +464,103 @@ class MediaLogicDbTest {
             client.close()
         }
     }
+
+    /** 一条 302：Location 指向 [to]。 */
+    private fun redirect(to: String, status: Int = 302): Nothing = throw neton.http.client.HttpClientException(
+        neton.http.client.HttpClientError.Http(status, "HTTP $status", "", neton.core.http.HttpHeaders.of("Location" to to)),
+    )
+
+    private fun pngChunks() = listOf(
+        neton.http.client.HttpClientStreamChunk.Start(200, neton.core.http.HttpHeaders.of("Content-Type" to "image/png")),
+        neton.http.client.HttpClientStreamChunk.Bytes(png),
+        neton.http.client.HttpClientStreamChunk.End(neton.core.http.HttpHeaders.EMPTY),
+    )
+
+    /** CDN 式重定向：相对 / 协议相对 / 绝对的 Location 都跟到底，最终文件按最后一跳的地址存。 */
+    @Test
+    fun importFollowsRedirectsUpToFiveHops() = withMigratedDatabase { db ->
+        val get = neton.http.client.HttpClientMethod.Get
+        val client = neton.http.testkit.ScriptedHttpClient()
+            .onStream(get, "https://site.test/img/a") { redirect("/cdn/b") }
+            .onStream(get, "https://site.test/cdn/b") { redirect("//cdn.test/c", 301) }
+            .onStream(get, "https://cdn.test/c") { redirect("d", 307) }
+            .onStream(get, "https://cdn.test/d") { redirect("https://store.test/e?x=1", 308) }
+            .onStream(get, "https://store.test/e") { redirect("final.png", 303) }
+            .onStream(get, "https://store.test/final.png") { pngChunks() }
+        val fx = Fixture(db) { client }
+        val r = fx.media.importFromUrl("content.image", "https://site.test/img/a", 7)
+        assertIs<ImportResult.Imported>(r, "$r")
+        assertEquals(
+            listOf(
+                "https://site.test/img/a", "https://site.test/cdn/b", "https://cdn.test/c", "https://cdn.test/d",
+                "https://store.test/e?x=1", "https://store.test/final.png",
+            ),
+            client.recorded.map { it.url },
+        )
+    }
+
+    @Test
+    fun importStopsAfterFiveRedirectsAndRefusesNonHttpHops() = withMigratedDatabase { db ->
+        val get = neton.http.client.HttpClientMethod.Get
+        var n = 0
+        val loop = neton.http.testkit.ScriptedHttpClient().onStream(get, "https://loop.test/") { redirect("https://loop.test/${++n}") }
+        val fx = Fixture(db) { loop }
+        val tooMany = fx.media.importFromUrl("content.image", "https://loop.test/0", 7)
+        assertEquals(MediaErrorCode.TOO_MANY_REDIRECTS, assertIs<ImportResult.Rejected>(tooMany).code)
+        assertEquals(6, loop.recorded.size, "the original request plus five redirects")
+
+        val toFile = neton.http.testkit.ScriptedHttpClient().onStream(get, "https://a.test/") { redirect("file:///etc/passwd") }
+        val r = Fixture(db) { toFile }.media.importFromUrl("content.image", "https://a.test/x", 7)
+        assertEquals(MediaErrorCode.URL_SCHEME_FORBIDDEN, assertIs<ImportResult.Rejected>(r).code)
+        assertEquals(1, toFile.recorded.size)
+
+        val noLocation = neton.http.testkit.ScriptedHttpClient().onStream(get, "https://b.test/") {
+            throw neton.http.client.HttpClientException(neton.http.client.HttpClientError.Http(302, "HTTP 302", ""))
+        }
+        val r2 = Fixture(db) { noLocation }.media.importFromUrl("content.image", "https://b.test/x", 7)
+        assertEquals(MediaErrorCode.FETCH_FAILED, assertIs<ImportResult.Rejected>(r2).code)
+    }
+
+    /**
+     * 第一跳是公网（脚本），第二跳 302 到内网：第二跳交给真实的受控客户端发出，按解析结果在连接前被拒。
+     * 证明每一跳都经过地址校验，而不是只校验用户给的那个地址。
+     */
+    @Test
+    fun aRedirectToAnInternalAddressIsRefusedAtTheSecondHop() = withMigratedDatabase { db ->
+        val get = neton.http.client.HttpClientMethod.Get
+        val firstHop = neton.http.testkit.ScriptedHttpClient()
+            .onStream(get, "https://public.test/1") { redirect("http://127.0.0.1/admin.png") }
+            .onStream(get, "https://public.test/2") { redirect("http://metadata.test/latest/meta-data") }
+            .onStream(get, "https://public.test/3") { redirect("http://[::ffff:169.254.169.254]/") }
+        val guarded = neton.http.client.GuardedHttpClientProvider(neton.http.client.EgressSettings()) {
+            neton.http.client.HttpClient.create {
+                it(this)
+                hostResolver = neton.http.client.HostResolver { host ->
+                    if (host == "metadata.test") listOf(neton.http.client.IpAddress.parse("169.254.169.254")!!) else error("NXDOMAIN $host")
+                }
+            }
+        }.create()
+        val seenByGuarded = mutableListOf<String>()
+        val client = object : neton.http.client.HttpClient {
+            override val capabilities = guarded.capabilities
+            override suspend fun request(request: neton.http.client.HttpClientRequest) = error("unused")
+            override fun stream(request: neton.http.client.HttpClientRequest) =
+                if (request.url.startsWith("https://public.test/")) firstHop.stream(request)
+                else { seenByGuarded += request.url; guarded.stream(request) }
+            override suspend fun close() = guarded.close()
+        }
+        try {
+            val fx = Fixture(db) { client }
+            for (start in listOf("https://public.test/1", "https://public.test/2", "https://public.test/3")) {
+                val r = fx.media.importFromUrl("content.image", start, 7)
+                assertEquals(MediaErrorCode.URL_TARGET_FORBIDDEN, assertIs<ImportResult.Rejected>(r, start).code, start)
+            }
+            assertEquals(
+                listOf("http://127.0.0.1/admin.png", "http://metadata.test/latest/meta-data", "http://[::ffff:169.254.169.254]/"),
+                seenByGuarded,
+            )
+        } finally {
+            client.close()
+        }
+    }
 }
