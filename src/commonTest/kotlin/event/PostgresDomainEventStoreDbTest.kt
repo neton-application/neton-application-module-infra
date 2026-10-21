@@ -371,4 +371,36 @@ class PostgresDomainEventStoreDbTest {
             .map { it.longOrNull("id")!! to it.intOrNull("status")!! }
         assertEquals(listOf(ids[2] to 3, ids[3] to 0), remaining)
     }
+
+    // ---- 即时投递 ----
+
+    /** 写入即唤醒：提交后的记录在第一档等待之后就被领取，不等周期任务；回滚的写入什么也领不到。 */
+    @Test
+    fun appendWakesPromptDispatchAfterCommit() = withMigratedDatabase { db ->
+        val claimed = mutableListOf<String>()
+        lateinit var store: PostgresDomainEventStore
+        val prompt = PromptEventDispatch(
+            dispatchOnce = {
+                val batch = store.claimDue(Long.MAX_VALUE / 2, 100, staleBefore = 0)
+                batch.forEach { claimed += it.payload; store.markDelivered(it.id, it.claimToken, 2_000L) }
+                batch.size
+            },
+            settleDelaysMillis = listOf(50, 250),
+        )
+        store = PostgresDomainEventStore(db, now = { 1_000L }, onAppend = prompt::signal)
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        prompt.start(scope)
+        try {
+            assertFailsWith<IllegalStateException> { db.transaction { store.append(pending(1)); error("rollback") } }
+            db.transaction { store.append(pending(2)) }
+            val deadline = kotlin.time.TimeSource.Monotonic.markNow()
+            while (claimed.isEmpty() && deadline.elapsedNow().inWholeMilliseconds < 1_000) kotlinx.coroutines.delay(10)
+            assertEquals(listOf("payload-2"), claimed, "the committed record is dispatched within a second; the rolled-back one never exists")
+            assertEquals(1L, db.countByStatus(2))
+        } finally {
+            prompt.stop()
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
 }
+

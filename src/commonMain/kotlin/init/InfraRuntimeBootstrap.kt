@@ -14,6 +14,7 @@ import logic.*
 // → 生成的 InfraLogicInitializer 装配; moduleId/dependsOn/migrations/路由 由 KSP manifest。
 // 这里留: 事件编解码默认值 + 业务类型登记表 + FileUploadLogic / MediaLogic + 日志写入器。
 object InfraRuntimeBootstrap {
+    @OptIn(kotlin.time.ExperimentalTime::class)
     fun initialize(ctx: NetonContext) {
         val loggerFactory = ctx.get(LoggerFactory::class)
 
@@ -22,10 +23,30 @@ object InfraRuntimeBootstrap {
         // storage 由 storage { } DSL 在 Main.kt 装配; policyRegistry inline 构造 → 非 @Logic。
         val storage = ctx.get(StorageOperator::class)
         // 持久化事件投递的落地实现（框架只定义端口，载体由应用层选）。表见 V008/V009。
+        // 写入即唤醒本节点的即时投递（PromptEventDispatch）：可重试事件不必等周期任务的下一轮（最长 10 秒）。
+        val promptDispatch = event.PromptEventDispatch(
+            dispatchOnce = {
+                val settings = event.DomainEventSettings.load()
+                event.DomainEventDispatcher(
+                    store = ctx.get(neton.core.event.DomainEventStore::class),
+                    bus = ctx.get(neton.core.event.DomainEventBus::class),
+                    codec = ctx.get(neton.core.event.DomainEventCodec::class),
+                    config = settings.dispatch,
+                ).dispatchOnce(kotlin.time.Clock.System.now().toEpochMilliseconds())
+            },
+            onError = { e -> loggerFactory.get("event").warn("event.prompt_dispatch.failed", mapOf("error" to (e.message ?: e::class.simpleName))) },
+        )
+        val ownStore = ctx.getOrNull(neton.core.event.DomainEventStore::class) == null
         ctx.bindIfAbsent(
             neton.core.event.DomainEventStore::class,
-            event.PostgresDomainEventStore(ctx.get(neton.database.api.DbContext::class)),
+            event.PostgresDomainEventStore(ctx.get(neton.database.api.DbContext::class), onAppend = promptDispatch::signal),
         )
+        if (ownStore) {
+            ctx.lifecycle.register("infra-prompt-event-dispatch", object : neton.core.component.NetonLifecycle {
+                override suspend fun start() = promptDispatch.start()
+                override suspend fun stop() = promptDispatch.stop()
+            })
+        }
 
         // 把持久化设施装进总线。总线由框架在启动最早期绑定（发布方那时已持有它），
         // 数据库要到这里才拿得到，所以分两步。应用层可以先绑自己的编解码；没绑就用按类登记的

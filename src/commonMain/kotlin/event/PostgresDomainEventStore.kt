@@ -27,6 +27,8 @@ class PostgresDomainEventStore(
     private val config: DomainEventStoreConfig = DomainEventStoreConfig(),
     /** 取当前时刻。可注入以便测试，生产用系统时钟。 */
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    /** 写入一条记录之后调用（仍在发布方事务内）：唤醒本节点的即时投递（[PromptEventDispatch]）。 */
+    private val onAppend: () -> Unit = {},
 ) : DomainEventStore {
 
     private val table = config.table
@@ -71,6 +73,7 @@ class PostgresDomainEventStore(
                 "ts" to ts,
             ),
         )
+        onAppend()
     }
 
     /**
