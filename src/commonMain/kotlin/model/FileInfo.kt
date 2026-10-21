@@ -39,6 +39,9 @@ data class FileInfo(
     val size: Long = 0,
     /** 内容 SHA-256，hex；与目录布局规则 `{businessType}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}` 一致，不带 ownerUid。 */
     val sha256: String? = null,
+    /** 图片原始宽高（像素，已按 EXIF 方向校正；infra-media §7.3）。非图片、未识别或历史行为空。 */
+    val width: Int? = null,
+    val height: Int? = null,
     /** 1=active, 0=orphaned/deleted。 */
     val status: Int = 1,
     /**

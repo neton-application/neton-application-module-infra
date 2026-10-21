@@ -47,6 +47,8 @@ class MediaLogic(
     private val httpClient: () -> HttpClient?,
     private val importConfig: ImportConfig = ImportConfig(),
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    /** CDN 地址策略（infra-media §7.3）；缺省不启用（strategy none）。 */
+    private val cdn: MediaCdnUrls = MediaCdnUrls.disabled(),
 ) : MediaService {
 
     data class ImportConfig(
@@ -213,8 +215,52 @@ class MediaLogic(
                 }
             }
         }
-        return readable.associate { r -> r.fileId!! to viewOf(r) }
+        val onCdn = if (cdn.enabled) anonymouslyVisible(readable, viewerUserId) else emptySet()
+        return readable.associate { r -> r.fileId!! to viewOf(r, r.fileId in onCdn) }
     }
+
+    /**
+     * CDN 地址只给「引用对象此刻对匿名访问者可见」的媒体（§7.3 范围；按 §7.1 以 `viewer = null` 判断）。
+     * 会员可见、仅本人、临时文件永远走短期签名地址，私密媒体不会出现在可缓存的公开 HTML 里。
+     *
+     * 匿名访问者自己的展开结果已经是这个集合；登录访问者要再按匿名判断一遍（同一引用对象只问一次）。
+     */
+    private suspend fun anonymouslyVisible(readable: List<FileInfo>, viewerUserId: Long?): Set<String> {
+        val out = HashSet<String>()
+        val delegated = mutableListOf<FileInfo>()
+        for (r in readable) {
+            val policy = r.businessType?.let { policyRegistry.policyOrNull(it) }
+            when (MediaRules.readWithoutReferences(policy, r.status, MediaLifecycle.fromCode(r.lifecycle), r.ownerUid, null)) {
+                true -> out += r.fileId!!
+                false -> Unit
+                null -> if (viewerUserId == null) out += r.fileId!! else delegated += r
+            }
+        }
+        if (delegated.isEmpty()) return out
+        val access = ownerAccess() ?: return out
+        val refsByFile = referencesOfMany(delegated.mapNotNull { it.fileId })
+        val memo = HashMap<Pair<String, String>, Boolean>()
+        for (r in delegated) {
+            val visible = refsByFile[r.fileId].orEmpty().any { ref ->
+                memo.getOrPut(ref.ownerType to ref.ownerId) { safeCanView(access, null, ref.ownerType, ref.ownerId) }
+            }
+            if (visible) out += r.fileId!!
+        }
+        return out
+    }
+
+    /**
+     * 换取当前桶的地址（`GET /app/infra/media/url/{fileId}`，长时间打开的页面图片过期时用）。
+     * 与 [resolve] 同一套可见性判断；看不到返回 null。[variant] 只在 CDN 图片处理开启且该档位存在时生效，
+     * 否则给原图地址。
+     */
+    suspend fun currentUrl(fileId: String, variant: MediaVariant?, viewerUserId: Long?): Pair<String, Long?>? {
+        val view = resolve(listOf(fileId), viewerUserId)[fileId] ?: return null
+        return (variant?.let { view.variants[it.key] } ?: view.url) to view.expiresAt
+    }
+
+    /** 对外公布的地址策略（`GET /app/infra/media/policy`）。 */
+    fun urlPolicy(): MediaUrlPolicyView = cdn.policy(signer.ttlSeconds)
 
     override suspend fun resolveForAdmin(fileIds: Collection<String>): Map<String, MediaView> {
         val ids = fileIds.filter { it.isNotBlank() }.distinct()
@@ -244,24 +290,35 @@ class MediaLogic(
         businessType = r.businessType ?: "",
         lifecycle = MediaLifecycle.fromCode(r.lifecycle),
         expiresAt = null,
+        width = r.width,
+        height = r.height,
     )
 
-    private fun viewOf(r: FileInfo): MediaView {
+    /** [onCdn]：该文件此刻对匿名访问者可见且 CDN 策略已开启（见 [anonymouslyVisible]）。 */
+    private fun viewOf(r: FileInfo, onCdn: Boolean = false): MediaView {
         val fileId = r.fileId!!
-        val public = isPublic(r)
-        val (url, exp) = if (public) {
-            (r.url?.takeIf { it.isNotBlank() } ?: files.relayUrlOf(fileId)) to null
-        } else {
-            signer.signedUrl(files.relayUrlOf(fileId), fileId)
+        val mime = r.mimeType ?: "application/octet-stream"
+        var variants = emptyMap<String, String>()
+        val (url, exp) = when {
+            onCdn -> {
+                val nowSeconds = cdn.currentSeconds()
+                variants = cdn.variants(r.path, mime, r.width, nowSeconds)
+                cdn.urlFor(r.path, null, nowSeconds).let { it.url to it.expiresAt }
+            }
+            isPublic(r) -> (r.url?.takeIf { it.isNotBlank() } ?: files.relayUrlOf(fileId)) to null
+            else -> signer.signedUrl(files.relayUrlOf(fileId), fileId)
         }
         return MediaView(
             fileId = fileId,
             url = url,
-            mimeType = r.mimeType ?: "application/octet-stream",
+            mimeType = mime,
             size = r.size,
             businessType = r.businessType ?: "",
             lifecycle = MediaLifecycle.fromCode(r.lifecycle),
             expiresAt = exp,
+            width = r.width,
+            height = r.height,
+            variants = variants,
         )
     }
 

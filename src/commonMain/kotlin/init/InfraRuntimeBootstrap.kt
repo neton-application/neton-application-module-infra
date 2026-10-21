@@ -76,6 +76,15 @@ object InfraRuntimeBootstrap {
         }
         val untrustedHttp = ctx.get(port.UntrustedHttpClient::class)
 
+        // CDN 地址策略（infra-media §7.3）：部署配置 [media.cdn]，密钥走 key_env 指向的环境变量。
+        // 配置不合法（未知策略、base_url 不是源站地址、签名策略缺密钥……）直接启动失败，不静默退回无鉴权。
+        val cdnConfig = MediaCdnConfig.parse(
+            neton.core.config.ConfigLoader.getConfigValue(infraConfig, "media.cdn") as? Map<String, Any?>,
+            env = { neton.core.config.getEnv(it) },
+        )
+        loggerFactory.get("logic.media").info("media.cdn.strategy", mapOf("config" to cdnConfig.toString()))
+        val cdnUrls = MediaCdnUrls(cdnConfig) { kotlin.time.Clock.System.now().epochSeconds }
+
         // 媒体关联 / 访问契约（infra-media §6 / §7）。签名密钥从 JWT 密钥按用途派生，不新增配置。
         // MediaOwnerAccess、出站客户端在请求时读取：前者由 infra 之后装配的模块绑定。
         // 转存的地址来自用户 / 采集内容，只走不可信 URL 客户端。
@@ -90,6 +99,7 @@ object InfraRuntimeBootstrap {
             ),
             ownerAccess = { ctx.getOrNull(port.MediaOwnerAccess::class) },
             httpClient = { untrustedHttp.client },
+            cdn = cdnUrls,
         )
         ctx.bind(MediaLogic::class, mediaLogic)
         ctx.bindIfAbsent(port.MediaService::class, mediaLogic)

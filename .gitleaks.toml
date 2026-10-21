@@ -1,0 +1,30 @@
+# Shared gitleaks base config for all repos under ~/projects.
+# - Hooks use a repo's own .gitleaks.toml when present, otherwise this file.
+# - Per-repo .gitleaks.toml files are self-contained copies of this header plus
+#   narrow (path + rule) allowlists for that repo's test fixtures; keep them narrow.
+title = "projects base"
+
+[extend]
+useDefault = true
+
+# Placeholders that our own secret-scrubbing writes back into code/docs.
+[[allowlists]]
+description = "scrubbed placeholders"
+regexTarget = "secret"
+regexes = [
+  '''^(REPLACE_ME|\*\*\*REMOVED\*\*\*|<redacted>|YOUR_[A-Z0-9_]+|your[_-][a-z0-9_-]+|changeme|placeholder)$''',
+  '''^SMS_\d+$''',
+]
+
+[[allowlists]]
+description = "dependency lockfiles (integrity hashes)"
+paths = [
+  '''(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|gradle\.lockfile|kotlin-js-store/yarn\.lock)$''',
+]
+
+# CDN URL-signing test vectors: the keys and signatures are the published worked examples from the
+# Tencent Cloud CDN and Alibaba Cloud CDN signing docs (see the doc URLs in the test), not credentials.
+[[allowlists]]
+description = "vendor documentation CDN signing examples"
+targetRules = ["generic-api-key"]
+paths = ['''^src/commonTest/kotlin/logic/MediaCdnTest\.kt$''']

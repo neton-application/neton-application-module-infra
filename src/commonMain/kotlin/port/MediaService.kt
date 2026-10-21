@@ -139,10 +139,15 @@ sealed interface ImportResult {
 }
 
 /**
- * 展开后的媒体（content-platform-architecture §6.1 的 M1 子集）。
+ * 展开后的媒体（content-platform-architecture §6.1 的 M1 子集 + infra-media §7.3）。
  *
- * @property url 访问地址。PUBLIC 为长期地址；OWNER / DELEGATED 为短期签名地址，[expiresAt] 为其过期时刻。
- * @property expiresAt 签名过期时刻（epoch 秒）；长期地址为 null。
+ * @property url 访问地址。按 CDN 地址策略（§7.3）：对匿名访问者可见的媒体在开启 CDN 时是 CDN 地址
+ *   （`public` 永久、签名策略按时间桶确定性签名）；其余照旧——PUBLIC 长期地址，OWNER / DELEGATED 短期签名地址。
+ * @property expiresAt 地址过期时刻（epoch 秒）；长期地址为 null。
+ * @property width 图片原始宽度（像素，已按 EXIF 方向校正）；非图片或未识别为 null。
+ * @property height 图片原始高度。
+ * @property variants 派生规格地址，键为 `logic.MediaVariant.key`（`w180`、`w360`、`w720`、`w1080`、`w1440`、`og`）。
+ *   只有 CDN 地址且配置了图片处理方言时才有；比原图宽的 `w*` 档位不输出。
  */
 data class MediaView(
     val fileId: String,
@@ -152,4 +157,7 @@ data class MediaView(
     val businessType: String,
     val lifecycle: MediaLifecycle,
     val expiresAt: Long? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val variants: Map<String, String> = emptyMap(),
 )

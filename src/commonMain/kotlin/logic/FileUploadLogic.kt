@@ -173,8 +173,9 @@ class FileUploadLogic(
         val sha256Hex = sha256Hex(bytes)
         val ext = extensionFor(mimeType, filename)
         val storageKey = storageKeyOf(policy, sha256Hex, ext)
+        val size = if (mimeType.startsWith("image/")) ImageDimensions.read(bytes) else null
         if (policy.managedLifecycle) {
-            return storeManaged(uploader, policy, mimeType, filename, bytes, sha256Hex, storageKey)
+            return storeManaged(uploader, policy, mimeType, filename, bytes, sha256Hex, storageKey, size)
         }
         // 幂等：同 owner + same businessType + same sha256 已上传过 → 直接返 existing。
         // 后台上传的行 owner_uid 为空，按 admin_uploader_id 去重；两类行互不命中。
@@ -200,7 +201,7 @@ class FileUploadLogic(
             log.info(
                 "FileUploadLogic.upload: dedup hit fileId=${existing.fileId} owner=${uploader.logLabel} sha=$sha256Hex",
             )
-            return existing
+            return backfillSize(db, existing, size)
         }
 
         // 写盘（neton-storage 抽象，第一版 local，后续切 S3 仅改 storage.conf）
@@ -222,6 +223,8 @@ class FileUploadLogic(
             mimeType = mimeType,
             size = bytes.size.toLong(),
             sha256 = sha256Hex,
+            width = size?.width,
+            height = size?.height,
             status = 1,
         )
         val inserted = FileInfoTable.insert(record)
@@ -253,6 +256,7 @@ class FileUploadLogic(
         bytes: ByteArray,
         sha256Hex: String,
         storageKey: String,
+        size: ImageDimensions.Size?,
     ): FileInfo = db.transaction {
         lockStoragePath(this, storageKey)
         val now = Clock.System.now().toEpochMilliseconds()
@@ -285,7 +289,7 @@ class FileUploadLogic(
                 log.info(
                     "FileUploadLogic.upload: dedup hit (temporary) fileId=${existing.fileId} owner=${uploader.logLabel} sha=$sha256Hex",
                 )
-                return@transaction existing
+                return@transaction backfillSize(this, existing, size)
             }
         }
 
@@ -304,6 +308,8 @@ class FileUploadLogic(
                 mimeType = mimeType,
                 size = bytes.size.toLong(),
                 sha256 = sha256Hex,
+                width = size?.width,
+                height = size?.height,
                 status = 1,
                 lifecycle = port.MediaLifecycle.TEMPORARY.code,
                 lifecycleAt = now,
@@ -313,6 +319,16 @@ class FileUploadLogic(
             "FileUploadLogic.upload: ok (temporary) fileId=$fileId owner=${uploader.logLabel} type=${policy.businessType} size=${bytes.size} sha=$sha256Hex",
         )
         inserted
+    }
+
+    /** 去重命中的历史行（V009 之前上传的）没有宽高时补上：同一内容，宽高必然相同。 */
+    private suspend fun backfillSize(tx: DbContext, existing: FileInfo, size: ImageDimensions.Size?): FileInfo {
+        if (size == null || existing.width != null) return existing
+        tx.execute(
+            "UPDATE infra_files SET width = :w, height = :h WHERE id = :id AND width IS NULL",
+            mapOf("w" to size.width, "h" to size.height, "id" to existing.id),
+        )
+        return existing.copy(width = size.width, height = size.height)
     }
 
     /** 按 fileId 查记录；下载/引用时用。 */

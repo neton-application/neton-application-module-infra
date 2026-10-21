@@ -121,7 +121,11 @@ class MediaLogicDbTest {
         override suspend fun presignWrite(path: String, ttl: Duration): String = throw UnsupportedOperationException()
     }
 
-    private class Fixture(db: DbContext, http: () -> neton.http.client.HttpClient? = { null }) {
+    private class Fixture(
+        db: DbContext,
+        cdn: MediaCdnUrls = MediaCdnUrls.disabled(),
+        http: () -> neton.http.client.HttpClient? = { null },
+    ) {
         val storage = MemoryStorage()
         val registry = FileBusinessPolicyRegistry.default().apply {
             register(
@@ -139,7 +143,11 @@ class MediaLogicDbTest {
         }
         val files = FileUploadLogic(QuietLogger, storage, registry, db)
         var visible: Set<Pair<String, String>> = emptySet()
-        var access: MediaOwnerAccess? = MediaOwnerAccess { _, t, id -> (t to id) in visible }
+        /** 只对登录访问者可见的引用对象（会员可见内容）。 */
+        var membersOnly: Set<Pair<String, String>> = emptySet()
+        var access: MediaOwnerAccess? = MediaOwnerAccess { viewer, t, id ->
+            (t to id) in visible && (viewer != null || (t to id) !in membersOnly)
+        }
         var clockSeconds = 1_000_000L
         val media = MediaLogic(
             log = QuietLogger,
@@ -149,6 +157,7 @@ class MediaLogicDbTest {
             signer = MediaUrlSigner(MediaUrlSigner.deriveKey("k".repeat(40)), nowSeconds = { clockSeconds }),
             ownerAccess = { access },
             httpClient = http,
+            cdn = cdn,
         )
     }
 
@@ -354,6 +363,109 @@ class MediaLogicDbTest {
         assertEquals(11, counts.size)
         assertTrue(counts.values.all { it == 1L })
         assertEquals("attached", db.lifecycleOf(many[0]), "内置类型 attach 后仍是 attached")
+    }
+
+    /** 有效的 PNG 文件头（1200×800），用来验证宽高随上传落库。 */
+    private val pngHeader = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13) +
+        "IHDR".encodeToByteArray() + byteArrayOf(0, 0, 0x04, 0xB0.toByte(), 0, 0, 0x03, 0x20, 8, 6, 0, 0, 0)
+
+    private fun hmacCdn(clock: () -> Long) = MediaCdnUrls(
+        MediaCdnConfig(CdnStrategy.HMAC, "https://img.example.com", "s".repeat(32), 1800, 1800, ImageParamsDialect.TENCENT),
+        clock,
+    )
+
+    /**
+     * CDN 地址策略的范围（§7.3）：只有引用对象此刻对匿名访问者可见的媒体给 CDN 地址；
+     * 会员可见、仅本人、临时文件照旧是短期签名中转地址——不管是谁在看。
+     */
+    @Test
+    fun cdnUrlsOnlyForAnonymouslyVisibleMedia() = withMigratedDatabase { db ->
+        var clock = 1_700_001_000L
+        val fx = Fixture(db, cdn = hmacCdn { clock })
+        val open = fx.files.storeBytes(7, "content.image", "a.png", "image/png", pngHeader).fileId!!
+        val members = fx.files.storeBytes(7, "content.image", "b.png", "image/png", pngHeader + byteArrayOf(1)).fileId!!
+        val temp = fx.files.storeBytes(7, "content.image", "c.png", "image/png", pngHeader + byteArrayOf(2)).fileId!!
+        val public = fx.files.storeBytes(7, "generic_image", "d.png", "image/png", pngHeader).fileId!!
+        val owner = fx.files.storeBytes(7, "kyc_document", "e.png", "image/png", png).fileId!!
+        fx.media.attach(open, "content.item", "1", "content.image", 7)
+        fx.media.attach(members, "content.item", "2", "content.image", 7)
+        fx.visible = setOf("content.item" to "1", "content.item" to "2")
+        fx.membersOnly = setOf("content.item" to "2")
+        val all = listOf(open, members, temp, public, owner)
+
+        val asUploader = fx.media.resolve(all, 7)
+        assertEquals(all.toSet(), asUploader.keys)
+        for (id in listOf(open, public)) {
+            val v = asUploader.getValue(id)
+            assertTrue(v.url.startsWith("https://img.example.com/"), "$id 走 CDN: ${v.url}")
+            assertTrue("&sig=" in v.url)
+            assertEquals(1_700_001_000L + 3600, v.expiresAt)
+            assertEquals(1200, v.width)
+            assertEquals(800, v.height)
+            assertEquals(listOf("w180", "w360", "w720", "w1080", "og"), v.variants.keys.toList(), "不放大到 1440")
+            assertTrue(v.variants.getValue("w360").contains("?imageMogr2/thumbnail/360x&exp="))
+        }
+        for (id in listOf(members, temp, owner)) {
+            val v = asUploader.getValue(id)
+            assertTrue(v.url.startsWith("/app/infra/file/get/$id?exp="), "$id 是私密媒体，走短期签名: ${v.url}")
+            assertTrue(v.variants.isEmpty())
+        }
+
+        val anonymous = fx.media.resolve(all, null)
+        assertEquals(setOf(open, public), anonymous.keys)
+        assertEquals(asUploader.getValue(open), anonymous.getValue(open), "同一桶内所有人拿到逐字节相同的地址")
+
+        val member = fx.media.resolve(listOf(members), 8)
+        assertTrue(member.getValue(members).url.startsWith("/app/infra/file/get/"), "会员能看到，但不是 CDN 地址")
+
+        // 撤回后（对匿名不可见）不再签发 CDN 地址
+        fx.visible = setOf("content.item" to "2")
+        assertTrue(fx.media.resolve(listOf(open), null).isEmpty())
+
+        // 换桶：签名换新
+        fx.visible = setOf("content.item" to "1")
+        val before = fx.media.resolve(listOf(open), null).getValue(open).url
+        clock += 1800
+        assertTrue(before != fx.media.resolve(listOf(open), null).getValue(open).url)
+    }
+
+    /** `GET /app/infra/media/url/{fileId}` 的逻辑：同一可见性判断，按规格给当前桶的地址。 */
+    @Test
+    fun currentUrlRefreshesWithinVisibility() = withMigratedDatabase { db ->
+        val fx = Fixture(db, cdn = hmacCdn { 1_700_001_000L })
+        val id = fx.files.storeBytes(7, "content.image", "a.png", "image/png", pngHeader).fileId!!
+        fx.media.attach(id, "content.item", "1", "content.image", 7)
+        assertNull(fx.media.currentUrl(id, null, null), "引用对象不可见 → 拿不到")
+        fx.visible = setOf("content.item" to "1")
+        val (orig, exp) = assertNotNull(fx.media.currentUrl(id, null, null))
+        assertEquals(fx.media.resolve(listOf(id), null).getValue(id).url, orig)
+        assertEquals(1_700_004_600L, exp)
+        val (w720, _) = assertNotNull(fx.media.currentUrl(id, MediaVariant.W720, null))
+        assertTrue("imageMogr2/thumbnail/720x" in w720)
+        assertEquals(orig, fx.media.currentUrl(id, MediaVariant.W1440, null)!!.first, "比原图宽的档位退回原图")
+        assertNull(fx.media.currentUrl("file_missing", null, null))
+        assertEquals("hmac", fx.media.urlPolicy().strategy)
+        assertEquals(3600L, fx.media.urlPolicy().validitySeconds)
+
+        // 不启用 CDN：照旧是中转地址，策略报告短期签名的有效期
+        val plain = Fixture(db)
+        assertEquals("none", plain.media.urlPolicy().strategy)
+        assertEquals(MediaUrlSigner.DEFAULT_TTL_SECONDS, plain.media.urlPolicy().validitySeconds)
+    }
+
+    /** 宽高在上传时读出；去重命中 V009 之前的行时补上。 */
+    @Test
+    fun dimensionsAreCapturedAndBackfilledOnDedup() = withMigratedDatabase { db ->
+        val fx = Fixture(db)
+        val f = fx.files.storeBytes(7, "generic_image", "a.png", "image/png", pngHeader)
+        assertEquals(1200, f.width)
+        assertEquals(800, f.height)
+        db.execute("UPDATE infra_files SET width = NULL, height = NULL WHERE file_id = :f", mapOf("f" to f.fileId))
+        val again = fx.files.storeBytes(7, "generic_image", "a.png", "image/png", pngHeader)
+        assertEquals(f.fileId, again.fileId)
+        assertEquals(1200, again.width)
+        assertEquals(1200L, db.fetchAll("SELECT width FROM infra_files WHERE file_id = :f", mapOf("f" to f.fileId)).first().long("width"))
+        assertNull(fx.files.storeBytes(7, "generic_image", "b.png", "image/png", png).width, "认不出的头不写宽高")
     }
 
     /** 后台上传：上传者记在 admin_uploader_id，应用侧同号账号不是上传者；只能以 null 关联。 */

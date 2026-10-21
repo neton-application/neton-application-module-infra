@@ -33,6 +33,10 @@ object InfraErrorCodes {
     const val FILE_DELETED = "FILE_DELETED"
     /** 无权读取该文件。 */
     const val FILE_FORBIDDEN = "FILE_FORBIDDEN"
+    /** 换取媒体地址过于频繁（`GET /app/infra/media/url/{fileId}`，按 IP）。 */
+    const val MEDIA_URL_RATE_LIMITED = "MEDIA_URL_RATE_LIMITED"
+    /** 不认识的派生规格（`variant` 不是 w180 / w360 / w720 / w1080 / w1440 / og）。 */
+    const val MEDIA_VARIANT_UNKNOWN = "MEDIA_VARIANT_UNKNOWN"
 
     // ---- 后台运维 ----
     /** 文件存储配置不存在。 */
