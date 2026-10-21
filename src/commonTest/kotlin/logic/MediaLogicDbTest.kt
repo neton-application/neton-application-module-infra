@@ -403,7 +403,7 @@ class MediaLogicDbTest {
             assertEquals(1200, v.width)
             assertEquals(800, v.height)
             assertEquals(listOf("w180", "w360", "w720", "w1080", "og"), v.variants.keys.toList(), "不放大到 1440")
-            assertTrue(v.variants.getValue("w360").contains("?imageMogr2/thumbnail/360x&exp="))
+            assertTrue(v.variants.getValue("w360").contains("?imageMogr2/thumbnail/360x/format/webp&exp="))
         }
         for (id in listOf(members, temp, owner)) {
             val v = asUploader.getValue(id)

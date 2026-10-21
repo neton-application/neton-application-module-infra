@@ -44,9 +44,9 @@ enum class CdnStrategy(val code: String, val signed: Boolean) {
 
 /** 图片处理参数的方言（infra-media §7.3 `image_params`）。 */
 enum class ImageParamsDialect(val code: String) {
-    /** 腾讯云数据万象：`?imageMogr2/thumbnail/<W>x`。 */
+    /** 腾讯云数据万象：`?imageMogr2/thumbnail/<W>x/format/webp`。 */
     TENCENT("tencent"),
-    /** 阿里云：`?x-oss-process=image/resize,w_<W>`。 */
+    /** 阿里云：`?x-oss-process=image/resize,w_<W>/format,webp`。 */
     ALIYUN("aliyun"),
     /** 不做缩放，只给原图。 */
     NONE("none"),
@@ -237,15 +237,20 @@ class MediaCdnUrls(val config: MediaCdnConfig, private val nowSeconds: () -> Lon
         imageParams = config.imageParams.code,
     )
 
-    /** 规格 → 所配方言的处理参数（查询串，不含 `?`）。 */
+    /**
+     * 规格 → 所配方言的处理参数（查询串，不含 `?`）。
+     *
+     * 宽度档同时转成 WebP（CLIENT_SPEC §7：页面图片用 WebP，体积约为同质量 JPEG 的 2/3，现行浏览器全部支持）；
+     * `og` 分享图保持原格式：微信等抓取分享卡片的客户端对 WebP 支持不一。
+     */
     internal fun processingQuery(v: MediaVariant): String? = when (config.imageParams) {
         ImageParamsDialect.NONE -> null
         ImageParamsDialect.TENCENT ->
             if (v.crop) "imageMogr2/thumbnail/${v.width}x${v.height}r/gravity/center/crop/${v.width}x${v.height}"
-            else "imageMogr2/thumbnail/${v.width}x"
+            else "imageMogr2/thumbnail/${v.width}x/format/webp"
         ImageParamsDialect.ALIYUN ->
             if (v.crop) "x-oss-process=image/resize,m_fill,w_${v.width},h_${v.height}"
-            else "x-oss-process=image/resize,w_${v.width}"
+            else "x-oss-process=image/resize,w_${v.width}/format,webp"
     }
 
     companion object {

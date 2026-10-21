@@ -139,7 +139,7 @@ class MediaCdnTest {
         val u = cdn.urlFor("app/content-images/ab/cd/abcd.png")
         assertEquals("https://img.example.com/app/content-images/ab/cd/abcd.png", u.url)
         assertNull(u.expiresAt)
-        assertEquals("https://img.example.com/app/content-images/ab/cd/abcd.png?imageMogr2/thumbnail/720x", cdn.urlFor("app/content-images/ab/cd/abcd.png", MediaVariant.W720).url)
+        assertEquals("https://img.example.com/app/content-images/ab/cd/abcd.png?imageMogr2/thumbnail/720x/format/webp", cdn.urlFor("app/content-images/ab/cd/abcd.png", MediaVariant.W720).url)
         assertNull(cdn.policy(600).validitySeconds)
         assertNull(cdn.policy(600).bucketSeconds)
     }
@@ -168,7 +168,7 @@ class MediaCdnTest {
     @Test
     fun aliyunDialect() {
         val cdn = urls(CdnStrategy.PUBLIC, { 1L }, ImageParamsDialect.ALIYUN)
-        assertEquals("https://img.example.com/p/x.jpg?x-oss-process=image/resize,w_180", cdn.urlFor("p/x.jpg", MediaVariant.W180).url)
+        assertEquals("https://img.example.com/p/x.jpg?x-oss-process=image/resize,w_180/format,webp", cdn.urlFor("p/x.jpg", MediaVariant.W180).url)
         assertEquals("https://img.example.com/p/x.jpg?x-oss-process=image/resize,m_fill,w_1200,h_675", cdn.urlFor("p/x.jpg", MediaVariant.OG).url)
     }
 
