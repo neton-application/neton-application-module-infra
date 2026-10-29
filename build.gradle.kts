@@ -79,6 +79,17 @@ ksp {
     arg("neton.moduleId", "infra")
 }
 
+// linuxX64 不用 Kotlin/Native 编译器缓存：debug 链接（单测 / harness）时，缓存里 cryptography-kotlin 预编译的
+// OpenSSL 会被整体链入，与 openssl-kotlin 源码编译的那份符号重复（ld.lld: duplicate symbol OPENSSL_*）。
+// Kotlin 2.4 起旧的 kotlin.native.cacheKind 属性已不再生效，只能用这个 DSL；release 链接本就不走缓存。
+kotlin.linuxX64().binaries.all {
+    @OptIn(org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeCacheApi::class)
+    disableNativeCache(
+        org.jetbrains.kotlin.gradle.plugin.mpp.DisableCacheInKotlinVersion.`2_4_20`,
+        "cryptography-kotlin's prebuilt OpenSSL and openssl-kotlin's OpenSSL collide when linked from caches",
+    )
+}
+
 // KSP 只在一个「生成主机」目标上跑，产物给所有目标共用（生成的是平台无关代码）：
 // Mac 上用 macosArm64，其他主机用 linuxX64 —— Linux 上编不了 Apple 目标，CI / Docker 的 Linux 构建因此不能依赖它。
 val kspHost = if (org.gradle.internal.os.OperatingSystem.current().isMacOsX) "macosArm64" else "linuxX64"
@@ -134,8 +145,9 @@ tasks.named<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>("
 tasks.register<Exec>("postgresContractTest") {
     group = "verification"
     description = "Runs the outbox store and media lifecycle contracts against a real PostgreSQL (EVENT_DB_URI required)."
-    dependsOn("linkDebugTestMacosArm64")
-    val binary = layout.buildDirectory.file("bin/macosArm64/debugTest/test.kexe")
+    // 测试二进制跟着构建机：Mac 上 macosArm64，Linux（CI）上 linuxX64；两组合约测试都在 commonTest 里
+    dependsOn("linkDebugTest" + kspHost.replaceFirstChar { it.uppercase() })
+    val binary = layout.buildDirectory.file("bin/$kspHost/debugTest/test.kexe")
     executable(binary.get().asFile.absolutePath)
     args("--ktest_filter=" + postgresContractClasses.joinToString(":") { "$it.*" }, "--ktest_logger=TEAMCITY")
     doFirst {

@@ -1,3 +1,5 @@
+@file:OptIn(neton.core.annotations.InternalNetonApi::class)
+
 package event
 
 import init.generated.InfraMigrationResources
