@@ -1,0 +1,56 @@
+{
+  "release": "1.0.0-beta",
+  "module": "infra",
+  "fresh_install_only": true,
+  "dependencies": [
+    "system"
+  ],
+  "baseline": [
+    {
+      "file": "V001__schema.sql",
+      "sha256": "e1212e73caba715d1a0f2e7d014648db7f179fb82d5f7d00f701999bcb33c775"
+    },
+    {
+      "file": "V002__data.sql",
+      "sha256": "d03bd7368930bb04a6171b149c920d9afc74ae80258a0a40b9c3fb9ef1c34728"
+    }
+  ],
+  "superseded": [
+    {
+      "name": "V001__baseline.sql",
+      "sha256": "00a69a9c79df761c30c92564674646de4c2c3110faa22baf1cd32bb3338bf129"
+    },
+    {
+      "name": "V002__menu_visibility.sql",
+      "sha256": "b015c903dcd53ffbf804680d186f430d294f0a568502a57affd84e0c64f64de0"
+    },
+    {
+      "name": "V003__fix_seeded_sequences.sql",
+      "sha256": "d05ffd5d25b210c3721888375c60d273218cc1146565990d68403af3bc6b44d4"
+    },
+    {
+      "name": "V004__drop_dead_config_buttons.sql",
+      "sha256": "df0f2819517ebcdf2b41cbcdcb65f47b24883122f32ca4e5db2a22f6c5ff5406"
+    },
+    {
+      "name": "V005__missing_write_buttons.sql",
+      "sha256": "6ed7506e2d13054e909d4c15c8599d4fb769331947cce87b9814efdf2cf5cb83"
+    },
+    {
+      "name": "V006__job_log_menu.sql",
+      "sha256": "db7113c5076a54045b4be56361cd7a67b9f2c3cc8986f940c20a0eda720fceec"
+    },
+    {
+      "name": "V007__media_lifecycle_references.sql",
+      "sha256": "f76436a3fd82a7f2900f7a5bcee56cc96d0bd8586e7b02910a1f80c58615aed4"
+    },
+    {
+      "name": "V008__admin_media_upload_read.sql",
+      "sha256": "d709df8aeec5818873537753fb5af8949ad65e5b0b2878829540ff0a797246d3"
+    },
+    {
+      "name": "V009__media_dimensions.sql",
+      "sha256": "482a437dabb0a299f869d5692aef8bb20786b415a5dd92cc52018e10db446abe"
+    }
+  ]
+}
