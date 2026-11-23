@@ -71,6 +71,21 @@ object InfraRuntimeBootstrap {
         // 文件公网前缀:conf [infra] file_public_base_url(如 https://h5.fflunp.cn/api),
         // 配置后下发绝对 URL,三端 <img>/Image 直接可加载。
         val infraConfig = neton.core.config.ConfigLoader.loadModuleConfig(moduleName = "infra")
+        val storagePolicy = FileStoragePolicy(
+            localRoot = neton.core.config.ConfigLoader.getString(infraConfig, "file_storage.local_root"),
+            allowedEndpoints = (neton.core.config.ConfigLoader.getConfigValue(infraConfig, "file_storage.allowed_endpoints") as? List<*>)
+                ?.map { it as? String ?: error("file_storage.allowed_endpoints must contain strings") }?.toSet().orEmpty(),
+            env = { neton.core.config.getEnv(it) },
+        )
+        val storageRuntime = FileStorageRuntime(db, storage) { record, settings ->
+            neton.storage.StorageOperatorFactory.create(
+                storagePolicy.resolve(record.storage, settings).copy(name = "infra-${record.id}"),
+                ctx.getOrNull(neton.http.client.HttpClient::class),
+                loggerFactory.get("infra.file-storage"),
+            )
+        }
+        ctx.bind(FileStorageRuntime::class, storageRuntime)
+        ctx.bind(FileLogic::class, FileLogic(loggerFactory.get("logic.file"), db, storageRuntime))
         val filePublicBaseUrl = neton.core.config.ConfigLoader
             .getString(infraConfig, "file_public_base_url")?.trim()?.takeIf { it.isNotEmpty() }
         val fileUploadLogic = FileUploadLogic(
@@ -79,6 +94,7 @@ object InfraRuntimeBootstrap {
             policyRegistry = policyRegistry,
             db = db,
             publicBaseUrl = filePublicBaseUrl,
+            storageRuntime = storageRuntime,
         )
         ctx.bind(FileUploadLogic::class, fileUploadLogic)
 

@@ -8,6 +8,14 @@ package port
  * `ImportResult.Rejected` 的 `code.name` 抛给客户端时，前端用同一套 `error.<CODE>` 词条翻译。
  */
 object InfraErrorCodes {
+    const val FILE_STORAGE_INVALID = "FILE_STORAGE_INVALID"
+    const val FILE_STORAGE_RATE_LIMITED = "FILE_STORAGE_RATE_LIMITED"
+    const val FILE_STORAGE_SECRET_MISSING = "FILE_STORAGE_SECRET_MISSING"
+    const val FILE_STORAGE_NOT_ALLOWED = "FILE_STORAGE_NOT_ALLOWED"
+    const val FILE_STORAGE_TEST_FAILED = "FILE_STORAGE_TEST_FAILED"
+    const val FILE_CONFIG_IN_USE = "FILE_CONFIG_IN_USE"
+    const val FILE_CONFIG_IS_MASTER = "FILE_CONFIG_IS_MASTER"
+    const val FILE_STORAGE_PRESIGN_UNSUPPORTED = "FILE_STORAGE_PRESIGN_UNSUPPORTED"
     // ---- 文件上传 / 读取 ----
     /** businessType 未注册。 */
     const val INVALID_BUSINESS_TYPE = "INVALID_BUSINESS_TYPE"

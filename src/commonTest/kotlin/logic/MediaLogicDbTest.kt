@@ -48,6 +48,66 @@ import kotlin.time.Duration
  */
 class MediaLogicDbTest {
 
+    @Test fun fileConfigurationsRouteRealLocalFilesAndKeepHistory() = withMigratedDatabase { db ->
+        val root = getEnv("NETON_STORAGE_TEST_ROOT") ?: fail("NETON_STORAGE_TEST_ROOT required")
+        val policy = FileStoragePolicy(root, emptySet()) { null }
+        val fallback = neton.storage.StorageOperatorFactory.create(neton.storage.SourceConfig(basePath = "$root/fallback"))
+        val runtime = FileStorageRuntime(db, fallback) { record, settings ->
+            neton.storage.StorageOperatorFactory.create(policy.resolve(record.storage, settings))
+        }
+        val logic = FileLogic(QuietLogger, db, runtime)
+        val controller = controller.admin.file.FileConfigController(QuietLogger, logic)
+        fun config(dir: String) = model.FileConfig(name = dir, storage = 0, config = FileStorageSettings.encode(FileStorageSettings(basePath = dir)))
+        val a = logic.createFileConfig(config("first"))
+        val b = logic.createFileConfig(config("second"))
+        assertTrue(logic.testFileConfig(a))
+        val registry = FileBusinessPolicyRegistry.default()
+        val files = FileUploadLogic(QuietLogger, fallback, registry, db, storageRuntime = runtime)
+        val old = files.storeBytes(7, "member_avatar", "old.png", "image/png", byteArrayOf(1, 2, 3))
+        assertNull(old.configId)
+        logic.updateMaster(a)
+        val first = files.storeBytes(7, "member_avatar", "one.png", "image/png", byteArrayOf(4, 5, 6))
+        assertEquals(a, first.configId)
+        logic.updateMaster(b)
+        val second = files.storeBytes(7, "member_avatar", "two.png", "image/png", byteArrayOf(7, 8, 9))
+        assertEquals(b, second.configId)
+        assertTrue(files.readBytes(old).contentEquals(byteArrayOf(1, 2, 3)))
+        assertTrue(files.readBytes(first).contentEquals(byteArrayOf(4, 5, 6)))
+        assertTrue(files.readBytes(second).contentEquals(byteArrayOf(7, 8, 9)))
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateFileConfig(logic.getFileConfig(a)!!.copy(config = FileStorageSettings.encode(FileStorageSettings(basePath = "changed")))) }
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.deleteFileConfig(a) }
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.deleteFileConfig(b) }
+        val unused = logic.createFileConfig(config("unused"))
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.deleteFileConfigs(listOf(unused, a)) }
+        assertNotNull(logic.getFileConfig(unused)) // batch rolls back entirely
+        val legacy = table.FileConfigTable.insert(model.FileConfig(name = "legacy", storage = 2, config = "{\"secretKey\":\"never-reflect\"}"))
+        assertNull(controller.get(legacy.id).config)
+        assertFalse(controller.get(legacy.id).valid)
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.testFileConfig(legacy.id) }
+        logic.updateFileConfig(legacy.copy(storage = 0, config = FileStorageSettings.encode(FileStorageSettings(basePath = "repaired"))))
+        assertTrue(controller.get(legacy.id).valid)
+        coroutineScope { listOf(a, b).map { id -> async { logic.updateMaster(id) } }.forEach { it.await() } }
+        assertEquals(1L, db.fetchAll("SELECT COUNT(*) AS c FROM infra_file_configs WHERE master = 1").first().long("c"))
+        files.deleteObject(first.path, first.configId)
+        assertFalse(runtime.forFile(a).exists(first.path))
+        assertTrue(runtime.forFile(b).exists(second.path))
+        files.deleteObject(second.path, second.configId)
+        files.deleteObject(old.path)
+        println("FILE_STORAGE_POSTGRES_PASS routing=true history=true immutable=true rollback=true legacy=true concurrentMaster=true")
+    }
+
+    @Test fun fileStorageProbeDoesNotClaimSuccessOnDeleteFailure() = withMigratedDatabase { db ->
+        val memory = MemoryStorage()
+        val runtime = FileStorageRuntime(db, memory) { _, _ -> memory }
+        val record = model.FileConfig(name = "probe", storage = 0, config = FileStorageSettings.encode(FileStorageSettings(basePath = "probe")))
+        runtime.probe(record)
+        assertTrue(memory.objects.isEmpty())
+        memory.failDeletes = true
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { runtime.probe(record) }
+        memory.failDeletes = false
+        memory.objects.clear()
+    }
+
     private object Env {
         val uri: String? = getEnv("EVENT_DB_URI")?.takeIf { it.isNotBlank() }
     }
@@ -60,7 +120,7 @@ class MediaLogicDbTest {
         try {
             onDatabase(tempUri) { db ->
                 val engine = MigrationEngine(db, MigrationConfig(dialect = MigrationDialect.POSTGRESQL))
-                when (val r = engine.run(MigrationCommand.UP, InfraMigrationResources.sources)) {
+                when (val r = engine.run(MigrationCommand.UP, init.generated.SystemMigrationResources.sources + InfraMigrationResources.sources)) {
                     is MigrationResult.Up -> if (!r.ok) fail("infra 迁移失败于 ${r.failedAt}")
                     else -> fail("非预期的迁移结果: $r")
                 }

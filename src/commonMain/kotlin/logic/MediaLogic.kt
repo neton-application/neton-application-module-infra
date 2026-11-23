@@ -300,7 +300,7 @@ class MediaLogic(
         val mime = r.mimeType ?: "application/octet-stream"
         var variants = emptyMap<String, String>()
         val (url, exp) = when {
-            onCdn -> {
+            onCdn && r.configId == null -> {
                 val nowSeconds = cdn.currentSeconds()
                 variants = cdn.variants(r.path, mime, r.width, nowSeconds)
                 cdn.urlFor(r.path, null, nowSeconds).let { it.url to it.expiresAt }
@@ -523,7 +523,7 @@ class MediaLogic(
     suspend fun purge(batchSize: Int = 200): Pair<Int, Int> {
         val rows = db.fetchAll(
             """
-            SELECT id, path FROM infra_files
+            SELECT id, path, config_id FROM infra_files
             WHERE lifecycle = 'deleted' AND purged_at IS NULL
             ORDER BY id
             LIMIT :limit
@@ -535,14 +535,15 @@ class MediaLogic(
         for (r in rows) {
             val id = r.long("id")
             val path = r.string("path")
+            val configId = r.longOrNull("config_id")
             try {
                 db.transaction {
                     FileUploadLogic.lockStoragePath(this, path)
                     val shared = fetchAll(
-                        "SELECT 1 AS ok FROM infra_files WHERE path = :path AND status = 1 LIMIT 1",
-                        mapOf("path" to path),
+                        "SELECT 1 AS ok FROM infra_files WHERE path = :path AND config_id IS NOT DISTINCT FROM CAST(:configId AS bigint) AND status = 1 LIMIT 1",
+                        mapOf("path" to path, "configId" to configId),
                     ).isNotEmpty()
-                    if (!shared) files.deleteObject(path)
+                    if (!shared) files.deleteObject(path, configId)
                     execute(
                         "UPDATE infra_files SET purged_at = :ts WHERE id = :id AND lifecycle = 'deleted'",
                         mapOf("ts" to now(), "id" to id),

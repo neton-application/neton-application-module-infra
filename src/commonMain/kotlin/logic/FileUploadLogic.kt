@@ -32,6 +32,7 @@ import table.FileInfoTable
  * ```
  * {SYSTEM_PREFIX}/{assetDir}/{sha256[0..2)}/{sha256[2..4)}/{sha256}.{ext}
  * ```
+ * 后台管理的存储配置在 SYSTEM_PREFIX 后插入 `sources/{configId}/`；启动默认源与历史文件保持原路径。
  *
  * 内容寻址，不带 ownerUid——归属记在 `infra_files` 元数据列，不进物理路径。
  *
@@ -50,6 +51,7 @@ class FileUploadLogic(
      * `baseUrl` 决定（见 [publicUrlFor]）。
      */
     private val publicBaseUrl: String? = null,
+    private val storageRuntime: FileStorageRuntime? = null,
 ) {
 
     /**
@@ -168,14 +170,24 @@ class FileUploadLogic(
         mimeType: String,
         filename: String,
         bytes: ByteArray,
+    ): FileInfo = if (storageRuntime != null) storageRuntime.locked(shared = true) {
+        storeOn(uploader, policy, mimeType, filename, bytes, storageRuntime.selected())
+    } else storeOn(uploader, policy, mimeType, filename, bytes, FileStorageRuntime.Target(null, storage))
+
+    private suspend fun storeOn(
+        uploader: Uploader, policy: FileBusinessPolicy, mimeType: String, filename: String,
+        bytes: ByteArray, target: FileStorageRuntime.Target,
     ): FileInfo {
+        val storage = target.operator
         val businessType = policy.businessType
         val sha256Hex = sha256Hex(bytes)
         val ext = extensionFor(mimeType, filename)
-        val storageKey = storageKeyOf(policy, sha256Hex, ext)
+        val rawKey = storageKeyOf(policy, sha256Hex, ext)
+        // Two profiles can point at one bucket; keep their physical keys disjoint.
+        val storageKey = target.configId?.let { rawKey.replaceFirst("$SYSTEM_PREFIX/", "$SYSTEM_PREFIX/sources/$it/") } ?: rawKey
         val size = if (mimeType.startsWith("image/")) ImageDimensions.read(bytes) else null
         if (policy.managedLifecycle) {
-            return storeManaged(uploader, policy, mimeType, filename, bytes, sha256Hex, storageKey, size)
+            return storeManaged(uploader, policy, mimeType, filename, bytes, sha256Hex, storageKey, size, target)
         }
         // 幂等：同 owner + same businessType + same sha256 已上传过 → 直接返 existing。
         // 后台上传的行 owner_uid 为空，按 admin_uploader_id 去重；两类行互不命中。
@@ -208,7 +220,7 @@ class FileUploadLogic(
         storage.write(storageKey, bytes, WriteOptions())
 
         val fileId = generateFileId()
-        val url = publicUrlFor(storageKey, fileId)
+        val url = publicUrlFor(storageKey, fileId, storage)
         val now = Clock.System.now().toEpochMilliseconds()
 
         val record = FileInfo(
@@ -216,7 +228,7 @@ class FileUploadLogic(
             ownerUid = uploader.ownerUid,
             adminUploaderId = uploader.adminUploaderId,
             businessType = businessType,
-            configId = null,
+            configId = target.configId,
             name = filename,
             path = storageKey,
             url = url,
@@ -257,7 +269,9 @@ class FileUploadLogic(
         sha256Hex: String,
         storageKey: String,
         size: ImageDimensions.Size?,
+        target: FileStorageRuntime.Target,
     ): FileInfo = db.transaction {
+        val storage = target.operator
         lockStoragePath(this, storageKey)
         val now = Clock.System.now().toEpochMilliseconds()
         // 只复用同一上传者的临时记录；后台上传的行 owner_uid 为空，按 admin_uploader_id 匹配
@@ -301,10 +315,10 @@ class FileUploadLogic(
                 ownerUid = uploader.ownerUid,
                 adminUploaderId = uploader.adminUploaderId,
                 businessType = policy.businessType,
-                configId = null,
+                configId = target.configId,
                 name = filename,
                 path = storageKey,
-                url = publicUrlFor(storageKey, fileId),
+                url = publicUrlFor(storageKey, fileId, storage),
                 mimeType = mimeType,
                 size = bytes.size.toLong(),
                 sha256 = sha256Hex,
@@ -341,7 +355,7 @@ class FileUploadLogic(
      * 按 fileId 读字节。仅供 [FileController] 在确认完归属/可见性后调用。
      */
     suspend fun readBytes(record: FileInfo): ByteArray =
-        storage.read(record.path)
+        (storageRuntime?.forFile(record.configId) ?: storage).read(record.path)
 
     /**
      * 鉴权语义（spec §4.2）：
@@ -360,7 +374,7 @@ class FileUploadLogic(
      * 🔴 绝不下发相对路径。客户端的头像缓存只认 `http(s)` 开头的地址，给它一个相对路径
      * 等于头像永远不下载——而且要等用户发现「设了头像不显示」才暴露（2026-09-09 生产实测）。
      */
-    private fun publicUrlFor(storageKey: String, fileId: String): String {
+    private fun publicUrlFor(storageKey: String, fileId: String, storage: StorageOperator): String {
         val objectBase = storage.baseUrl.trim().trimEnd('/')
         if (objectBase.isNotEmpty()) return "$objectBase/$storageKey"
         return relayUrlOf(fileId)
@@ -389,8 +403,9 @@ class FileUploadLogic(
     }
 
     /** 删除物理对象（清理任务用）。对象已不存在视为成功，删失败抛出由调用方重试。 */
-    suspend fun deleteObject(path: String) {
-        if (storage.exists(path)) storage.delete(path)
+    suspend fun deleteObject(path: String, configId: Long? = null) {
+        val operator = storageRuntime?.forFile(configId) ?: storage
+        if (operator.exists(path)) operator.delete(path)
     }
 
     companion object {

@@ -9,11 +9,14 @@ import neton.database.dsl.*
 import neton.database.api.DbContext
 
 import neton.logging.Logger
+import neton.core.http.BadRequestException
+import neton.core.http.NotFoundException
+import port.InfraErrorCodes
 
-@neton.core.annotations.Logic(logger = "logic.file")
 class FileLogic(
     private val log: Logger,
     private val db: DbContext,
+    private val storage: FileStorageRuntime,
 ) {
 
     // --- FileInfo operations ---
@@ -67,44 +70,47 @@ class FileLogic(
     )
 
     suspend fun getPresignedUrl(name: String, directory: String? = null): PresignedUrlResult {
-        val masterConfig = FileConfigTable.oneWhere {
-            FileConfig::master eq 1
-        }
-
-        if (masterConfig == null) {
-            log.warn("No master file config found, cannot generate presigned URL")
-            return PresignedUrlResult(0, "", "", "")
-        }
-
-        val dir = if (!directory.isNullOrBlank()) directory.trimEnd('/') + "/" else ""
-        val filePath = "$dir$name"
-        val fileUrl = "/infra/file/${masterConfig.id}/get/$filePath"
-
-        log.info("Generating presigned URL for path: $filePath, storage type: ${masterConfig.storage}")
-        return PresignedUrlResult(
-            configId = masterConfig.id,
-            uploadUrl = fileUrl,
-            url = fileUrl,
-            path = filePath
-        )
+        // Direct upload bypasses media validation/lifecycle. Do not manufacture a signature.
+        throw BadRequestException(InfraErrorCodes.FILE_STORAGE_PRESIGN_UNSUPPORTED)
     }
 
     // --- FileConfig operations ---
 
-    suspend fun createFileConfig(fileConfig: FileConfig): Long {
+    suspend fun createFileConfig(fileConfig: FileConfig): Long = storage.locked {
+        validate(fileConfig)
+        storage.operator(fileConfig)
+        if (fileConfig.master == 1) {
+            storage.probe(fileConfig)
+            clearMaster()
+        }
         val inserted = FileConfigTable.insert(fileConfig)
         log.info("Created file config with id: ${inserted.id}, name: ${fileConfig.name}")
-        return inserted.id
+        inserted.id
     }
 
-    suspend fun updateFileConfig(fileConfig: FileConfig) {
+    suspend fun updateFileConfig(fileConfig: FileConfig) = storage.locked {
+        val current = FileConfigTable.get(fileConfig.id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
+        validate(fileConfig)
+        val changed = current.storage != fileConfig.storage || FileStorageSettings.decode(current) != FileStorageSettings.decode(fileConfig)
+        if (changed && referenced(fileConfig.id)) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_IN_USE)
+        storage.operator(fileConfig)
+        if (fileConfig.master == 1 && (changed || current.master != 1)) storage.probe(fileConfig)
+        if (fileConfig.master == 1) clearMaster()
         FileConfigTable.update(fileConfig)
         log.info("Updated file config with id: ${fileConfig.id}")
     }
 
-    suspend fun deleteFileConfig(id: Long) {
-        FileConfigTable.destroy(id)
-        log.info("Deleted file config with id: $id")
+    suspend fun deleteFileConfig(id: Long) = deleteFileConfigs(listOf(id))
+
+    suspend fun deleteFileConfigs(ids: List<Long>) = storage.locked {
+        if (ids.isEmpty() || ids.size > 100 || ids.any { it <= 0 }) throw BadRequestException(InfraErrorCodes.INVALID_ARGUMENT)
+        ids.distinct().forEach { id ->
+            val current = FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
+            if (current.master == 1) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_IS_MASTER)
+            if (referenced(id)) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_IN_USE)
+            FileConfigTable.destroy(id)
+            log.info("Deleted file config with id: $id")
+        }
     }
 
     suspend fun getFileConfig(id: Long): FileConfig? {
@@ -130,38 +136,23 @@ class FileLogic(
             if (size > 0) ((result.total + size - 1) / size).toInt() else 0)
     }
 
-    suspend fun updateMaster(id: Long) {
-        // Reset all configs to non-master + set the specified config as master in a single transaction
-        db.transaction {
-            FileConfigTable.query {}.list().forEach { config ->
-                if (config.master != 0) {
-                    FileConfigTable.update(config.copy(master = 0))
-                }
-            }
-            val config = FileConfigTable.get(id) ?: return@transaction
-            FileConfigTable.update(config.copy(master = 1))
-        }
+    suspend fun updateMaster(id: Long) = storage.locked {
+        val config = FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
+        storage.probe(config)
+        clearMaster()
+        FileConfigTable.update(config.copy(master = 1))
         log.info("Set file config id: $id as master")
     }
 
-    suspend fun testFileConfig(id: Long): Boolean {
-        val config = FileConfigTable.get(id)
-        if (config == null) {
-            log.warn("File config not found for testing: id=$id")
-            return false
-        }
+    suspend fun testFileConfig(id: Long): Boolean = storage.locked {
+        storage.probe(FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND))
+        true
+    }
 
-        return try {
-            // Basic validation: check config has required fields
-            if (config.name.isBlank()) {
-                log.warn("File config name is blank: id=$id")
-                return false
-            }
-            log.info("File config test passed for id=$id, name=${config.name}")
-            true
-        } catch (e: Exception) {
-            log.error("File config test failed for id=$id: ${e.message}")
-            false
-        }
+    private suspend fun clearMaster() { db.execute("UPDATE infra_file_configs SET master = 0 WHERE master = 1") }
+    private suspend fun referenced(id: Long): Boolean = db.fetchAll("SELECT 1 AS ok FROM infra_files WHERE config_id = :id LIMIT 1", mapOf("id" to id)).isNotEmpty()
+    private fun validate(record: FileConfig) {
+        if (record.name.isBlank() || record.name.length > 64 || (record.remark?.length ?: 0) > 255 || record.master !in 0..1) throw BadRequestException(InfraErrorCodes.INVALID_ARGUMENT)
+        if (FileStorageSettings.decode(record) == null) throw BadRequestException(InfraErrorCodes.FILE_STORAGE_INVALID)
     }
 }

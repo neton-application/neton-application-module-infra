@@ -95,7 +95,7 @@ class PostgresDomainEventStoreDbTest {
     /** 跑 infra 的真实迁移；再确认迁移出来的表带 V010 的 claim_token 列。 */
     private suspend fun runInfraMigrations(db: DbContext) {
         val engine = MigrationEngine(db, MigrationConfig(dialect = MigrationDialect.POSTGRESQL))
-        when (val result = engine.run(MigrationCommand.UP, InfraMigrationResources.sources)) {
+        when (val result = engine.run(MigrationCommand.UP, init.generated.SystemMigrationResources.sources + InfraMigrationResources.sources)) {
             is MigrationResult.Up -> {
                 if (!result.ok) fail("infra 迁移失败于 ${result.failedAt}")
                 assertTrue(result.applied.isNotEmpty(), "临时库里应当应用了迁移")

@@ -150,6 +150,8 @@ tasks.register<Exec>("postgresContractTest") {
     val binary = layout.buildDirectory.file("bin/$kspHost/debugTest/test.kexe")
     executable(binary.get().asFile.absolutePath)
     args("--ktest_filter=" + postgresContractClasses.joinToString(":") { "$it.*" }, "--ktest_logger=TEAMCITY")
+    environment("NETON_STORAGE_TEST_ROOT", System.getenv("NETON_STORAGE_TEST_ROOT")
+        ?: layout.buildDirectory.dir("file-storage-contract").get().asFile.absolutePath)
     doFirst {
         check(!System.getenv("EVENT_DB_URI").isNullOrBlank()) {
             "postgresContractTest requires EVENT_DB_URI (a PostgreSQL URI whose role has CREATEDB). " +

@@ -15,6 +15,8 @@ import neton.core.annotations.Permission
 import neton.core.annotations.Query
 import neton.core.annotations.PathVariable
 import neton.core.annotations.Body
+import neton.core.annotations.RateLimit
+import neton.core.annotations.RateLimitScope
 import neton.core.http.NotFoundException
 import neton.logging.Logger
 
@@ -26,11 +28,12 @@ class FileConfigController(
 
     @Post("/create")
     @Permission("infra:file-config:create")
+    @RateLimit(windowSeconds = 60, maxRequests = 20, scope = RateLimitScope.USER, message = InfraErrorCodes.FILE_STORAGE_RATE_LIMITED)
     suspend fun create(@Body request: CreateFileConfigRequest): Long {
         val fileConfig = FileConfig(
             name = request.name,
             storage = request.storage,
-            config = "",
+            config = logic.FileStorageSettings.encode(request.config),
             master = request.master,
             remark = request.remark
         )
@@ -39,11 +42,13 @@ class FileConfigController(
 
     @Put("/update")
     @Permission("infra:file-config:update")
+    @RateLimit(windowSeconds = 60, maxRequests = 20, scope = RateLimitScope.USER, message = InfraErrorCodes.FILE_STORAGE_RATE_LIMITED)
     suspend fun update(@Body request: UpdateFileConfigRequest) {
         val existing = fileLogic.getFileConfig(request.id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
         val fileConfig = existing.copy(
             name = request.name,
             storage = request.storage,
+            config = logic.FileStorageSettings.encode(request.config),
             master = request.master,
             remark = request.remark
         )
@@ -59,13 +64,14 @@ class FileConfigController(
     @Delete("/delete-list")
     @Permission("infra:file-config:delete")
     suspend fun deleteList(@Query ids: String) {
-        ids.split(",").mapNotNull { it.trim().toLongOrNull() }.forEach { fileLogic.deleteFileConfig(it) }
+        val values = ids.split(",").map { it.trim().toLongOrNull() ?: throw neton.core.http.BadRequestException(InfraErrorCodes.INVALID_ARGUMENT) }
+        fileLogic.deleteFileConfigs(values)
     }
 
     @Get("/get/{id}")
     @Permission("infra:file-config:query")
-    suspend fun get(@PathVariable id: Long): FileConfig? {
-        return fileLogic.getFileConfig(id)
+    suspend fun get(@PathVariable id: Long): FileConfigVO {
+        return fileLogic.getFileConfig(id)?.toVO() ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
     }
 
     @Get("/page")
@@ -75,17 +81,27 @@ class FileConfigController(
         @Query pageSize: Int = 10,
         @Query name: String? = null,
         @Query storage: Int? = null
-    ) = fileLogic.pageFileConfig(pageNo, pageSize, name, storage)
+    ): dto.PageResponse<FileConfigVO> {
+        val result = fileLogic.pageFileConfig(pageNo, pageSize, name, storage)
+        return dto.PageResponse(result.list.map { it.toVO() }, result.total, result.page, result.size, result.totalPages)
+    }
 
     @Put("/update-master/{id}")
     @Permission("infra:file-config:update")
+    @RateLimit(windowSeconds = 60, maxRequests = 10, scope = RateLimitScope.USER, message = InfraErrorCodes.FILE_STORAGE_RATE_LIMITED)
     suspend fun updateMaster(@PathVariable id: Long) {
         fileLogic.updateMaster(id)
     }
 
-    @Get("/test/{id}")
-    @Permission("infra:file-config:query")
+    @Post("/test/{id}")
+    @Permission("infra:file-config:update")
+    @RateLimit(windowSeconds = 60, maxRequests = 10, scope = RateLimitScope.USER, message = InfraErrorCodes.FILE_STORAGE_RATE_LIMITED)
     suspend fun test(@PathVariable id: Long): Boolean {
         return fileLogic.testFileConfig(id)
+    }
+
+    private fun FileConfig.toVO(): FileConfigVO {
+        val safe = logic.FileStorageSettings.decode(this)
+        return FileConfigVO(id, name, storage, master, remark, safe, safe != null)
     }
 }
