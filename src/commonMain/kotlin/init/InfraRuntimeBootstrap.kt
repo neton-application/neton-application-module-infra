@@ -10,9 +10,9 @@ import neton.storage.StorageOperator
 
 import logic.*
 
-// MANIFEST-P3: 手写 runtime bootstrap。FileLogic / JobLogic 已标 @Logic
-// → 生成的 InfraLogicInitializer 装配; moduleId/dependsOn/migrations/路由 由 KSP manifest。
-// 这里留: 事件编解码默认值 + 业务类型登记表 + FileUploadLogic / MediaLogic + 日志写入器。
+// MANIFEST-P3: JobLogic 等由 @Logic 生成装配；模块与路由由 KSP manifest 装配。
+// FileLogic 依赖本处创建的 FileStorageRuntime，因此与 FileUploadLogic / MediaLogic 一起显式绑定。
+// 其余为事件编解码默认值、业务类型登记表与日志写入器。
 object InfraRuntimeBootstrap {
     @OptIn(kotlin.time.ExperimentalTime::class)
     fun initialize(ctx: NetonContext) {
