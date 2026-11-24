@@ -60,12 +60,19 @@ class MediaLogicDbTest {
         fun config(dir: String) = model.FileConfig(name = dir, storage = 0, config = FileStorageSettings.encode(FileStorageSettings(basePath = dir)))
         val a = logic.createFileConfig(config("first"))
         val b = logic.createFileConfig(config("second"))
+        assertNull(controller.get(a).testPassed)
         assertTrue(logic.testFileConfig(a))
+        assertEquals(true, controller.get(a).testPassed)
+        logic.updateFileConfig(logic.getFileConfig(a)!!.copy(remark = "renamed"))
+        assertEquals(true, controller.get(a).testPassed)
+        logic.updateFileConfig(logic.getFileConfig(a)!!.copy(config = config("first-updated").config))
+        assertNull(controller.get(a).testPassed)
         val registry = FileBusinessPolicyRegistry.default()
         val files = FileUploadLogic(QuietLogger, fallback, registry, db, storageRuntime = runtime)
         val old = files.storeBytes(7, "member_avatar", "old.png", "image/png", byteArrayOf(1, 2, 3))
         assertNull(old.configId)
         logic.updateMaster(a)
+        assertEquals(true, controller.get(a).testPassed)
         val first = files.storeBytes(7, "member_avatar", "one.png", "image/png", byteArrayOf(4, 5, 6))
         assertEquals(a, first.configId)
         logic.updateMaster(b)
@@ -75,11 +82,11 @@ class MediaLogicDbTest {
         assertTrue(files.readBytes(first).contentEquals(byteArrayOf(4, 5, 6)))
         assertTrue(files.readBytes(second).contentEquals(byteArrayOf(7, 8, 9)))
         kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateFileConfig(logic.getFileConfig(a)!!.copy(config = FileStorageSettings.encode(FileStorageSettings(basePath = "changed")))) }
-        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.deleteFileConfig(a) }
-        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.deleteFileConfig(b) }
-        val unused = logic.createFileConfig(config("unused"))
-        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.deleteFileConfigs(listOf(unused, a)) }
-        assertNotNull(logic.getFileConfig(unused)) // batch rolls back entirely
+        logic.updateFileConfigStatus(a, 0)
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateMaster(a) }
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateFileConfigStatus(b, 0) }
+        assertTrue(files.readBytes(first).contentEquals(byteArrayOf(4, 5, 6)))
+        logic.updateFileConfigStatus(a, 1)
         val legacy = table.FileConfigTable.insert(model.FileConfig(name = "legacy", storage = 2, config = "{\"secretKey\":\"never-reflect\"}"))
         assertNull(controller.get(legacy.id).config)
         assertFalse(controller.get(legacy.id).valid)
@@ -106,6 +113,83 @@ class MediaLogicDbTest {
         kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { runtime.probe(record) }
         memory.failDeletes = false
         memory.objects.clear()
+    }
+
+    @Test fun fileConfigSavesWithoutStorageAndReportsWriteDenialOnTest() = withMigratedDatabase { db ->
+        var operators = 0
+        val memory = MemoryStorage()
+        val denied = object : neton.storage.StorageOperator by memory {
+            override suspend fun write(path: String, data: ByteArray, options: WriteOptions) {
+                throw neton.storage.StorageAccessDeniedException(path)
+            }
+        }
+        val runtime = FileStorageRuntime(db, memory) { _, _ ->
+            operators++
+            denied
+        }
+        val logic = FileLogic(QuietLogger, db, runtime)
+        val id = logic.createFileConfig(model.FileConfig(
+            name = "draft", storage = 0, master = 1,
+            config = FileStorageSettings.encode(FileStorageSettings(basePath = "draft")),
+        ))
+        val draft = logic.getFileConfig(id)!!
+        assertEquals(0, draft.master)
+        logic.updateFileConfig(draft.copy(name = "edited", master = 1))
+        assertEquals(0, operators)
+        val failure = kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.testFileConfig(id) }
+        assertEquals(port.InfraErrorCodes.FILE_STORAGE_WRITE_DENIED, failure.message)
+        assertEquals(false, logic.getFileConfig(id)!!.testPassed)
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateMaster(id) }
+        assertEquals(0, logic.getFileConfig(id)!!.master)
+    }
+
+    @Test fun fileConfigPersistsTestResultAndResetsAfterSettingsChange() = withMigratedDatabase { db ->
+        val memory = MemoryStorage()
+        val runtime = FileStorageRuntime(db, memory) { _, _ -> memory }
+        val logic = FileLogic(QuietLogger, db, runtime)
+        val id = logic.createFileConfig(model.FileConfig(
+            name = "probe", storage = 0,
+            config = FileStorageSettings.encode(FileStorageSettings(basePath = "probe")),
+        ))
+        assertNull(logic.getFileConfig(id)!!.testPassed)
+        assertTrue(logic.testFileConfig(id))
+        val tested = logic.getFileConfig(id)!!
+        assertEquals(true, tested.testPassed)
+        logic.updateFileConfig(tested.copy(remark = "updated"))
+        assertEquals(true, logic.getFileConfig(id)!!.testPassed)
+        logic.updateFileConfig(tested.copy(
+            config = FileStorageSettings.encode(FileStorageSettings(basePath = "alternate")),
+        ))
+        assertNull(logic.getFileConfig(id)!!.testPassed)
+        logic.updateMaster(id)
+        assertEquals(true, logic.getFileConfig(id)!!.testPassed)
+        memory.failDeletes = true
+        kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.testFileConfig(id) }
+        val failed = logic.getFileConfig(id)!!
+        assertEquals(false, failed.testPassed)
+        assertEquals(1, failed.master)
+    }
+
+    @Test fun disabledFileConfigPreservesHistoryAndCannotBecomeMaster() = withMigratedDatabase { db ->
+        val memory = MemoryStorage()
+        val runtime = FileStorageRuntime(db, memory) { _, _ -> memory }
+        val logic = FileLogic(QuietLogger, db, runtime)
+        val id = logic.createFileConfig(model.FileConfig(
+            name = "probe", storage = 0,
+            config = FileStorageSettings.encode(FileStorageSettings(basePath = "probe")),
+        ))
+        assertEquals(1, logic.getFileConfig(id)!!.status)
+        logic.updateFileConfigStatus(id, 0)
+        assertEquals(listOf(id), logic.pageFileConfig(1, 10, status = 0).list.map { it.id })
+        assertTrue(runtime.forFile(id) === memory)
+        assertTrue(logic.testFileConfig(id))
+        val rejected = kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateMaster(id) }
+        assertEquals(port.InfraErrorCodes.FILE_CONFIG_DISABLED, rejected.message)
+        logic.updateFileConfigStatus(id, 1)
+        logic.updateMaster(id)
+        val primary = kotlin.test.assertFailsWith<neton.core.http.BadRequestException> { logic.updateFileConfigStatus(id, 0) }
+        assertEquals(port.InfraErrorCodes.FILE_CONFIG_MASTER_DISABLE, primary.message)
+        assertEquals(1, logic.getFileConfig(id)!!.master)
     }
 
     private object Env {

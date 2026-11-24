@@ -3,13 +3,13 @@ package logic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import model.FileConfig
 import neton.core.http.BadRequestException
 import neton.core.http.NotFoundException
 import neton.database.api.DbContext
 import neton.database.dsl.*
+import neton.storage.StorageAccessDeniedException
 import neton.storage.StorageOperator
 import port.InfraErrorCodes
 import table.FileConfigTable
@@ -44,29 +44,50 @@ class FileStorageRuntime(
         val operator = operator(record)
         val path = "_neton_probe/" + neton.security.random.SecureRandom.hex(20)
         val bytes = "neton-storage-probe".encodeToByteArray()
+        var primary: Throwable? = null
         try {
-            val completed = withTimeoutOrNull(10_000) {
-                var primary: Throwable? = null
-                try {
-                    operator.write(path, bytes)
-                    check(operator.read(path).contentEquals(bytes))
-                } catch (e: Throwable) {
-                    primary = e
-                    throw e
-                } finally {
-                    try {
-                        withContext(NonCancellable) { withTimeout(5_000) { operator.delete(path) } }
-                    } catch (cleanup: Throwable) {
-                        if (primary == null) throw cleanup else primary.addSuppressed(cleanup)
-                    }
+            probeStep(ProbeStep.WRITE) { operator.write(path, bytes) }
+            probeStep(ProbeStep.READ) {
+                if (!operator.read(path).contentEquals(bytes)) {
+                    throw BadRequestException(InfraErrorCodes.FILE_STORAGE_TEST_MISMATCH)
                 }
+            }
+        } catch (failure: Throwable) {
+            primary = failure
+            throw failure
+        } finally {
+            try {
+                withContext(NonCancellable) {
+                    probeStep(ProbeStep.DELETE) { operator.delete(path) }
+                }
+            } catch (cleanup: Throwable) {
+                if (primary == null) throw cleanup
+                primary.addSuppressed(cleanup)
+            }
+        }
+    }
+
+    private suspend fun probeStep(step: ProbeStep, operation: suspend () -> Unit) {
+        val completed = try {
+            withTimeoutOrNull(5_000) {
+                operation()
                 true
             }
-            if (completed != true) throw BadRequestException(InfraErrorCodes.FILE_STORAGE_TEST_FAILED)
-        } catch (e: CancellationException) {
-            throw e
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: BadRequestException) {
+            throw failure
+        } catch (_: StorageAccessDeniedException) {
+            throw BadRequestException(step.denied)
         } catch (_: Exception) {
-            throw BadRequestException(InfraErrorCodes.FILE_STORAGE_TEST_FAILED)
+            throw BadRequestException(step.failed)
         }
+        if (completed != true) throw BadRequestException(step.timedOut)
+    }
+
+    private enum class ProbeStep(val failed: String, val denied: String, val timedOut: String) {
+        WRITE(InfraErrorCodes.FILE_STORAGE_WRITE_FAILED, InfraErrorCodes.FILE_STORAGE_WRITE_DENIED, InfraErrorCodes.FILE_STORAGE_WRITE_TIMEOUT),
+        READ(InfraErrorCodes.FILE_STORAGE_READ_FAILED, InfraErrorCodes.FILE_STORAGE_READ_DENIED, InfraErrorCodes.FILE_STORAGE_READ_TIMEOUT),
+        DELETE(InfraErrorCodes.FILE_STORAGE_DELETE_FAILED, InfraErrorCodes.FILE_STORAGE_DELETE_DENIED, InfraErrorCodes.FILE_STORAGE_DELETE_TIMEOUT),
     }
 }

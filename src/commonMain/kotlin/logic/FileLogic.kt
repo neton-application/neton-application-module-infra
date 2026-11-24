@@ -78,12 +78,7 @@ class FileLogic(
 
     suspend fun createFileConfig(fileConfig: FileConfig): Long = storage.locked {
         validate(fileConfig)
-        storage.operator(fileConfig)
-        if (fileConfig.master == 1) {
-            storage.probe(fileConfig)
-            clearMaster()
-        }
-        val inserted = FileConfigTable.insert(fileConfig)
+        val inserted = FileConfigTable.insert(fileConfig.copy(master = 0, testPassed = null, status = 1))
         log.info("Created file config with id: ${inserted.id}, name: ${fileConfig.name}")
         inserted.id
     }
@@ -93,24 +88,22 @@ class FileLogic(
         validate(fileConfig)
         val changed = current.storage != fileConfig.storage || FileStorageSettings.decode(current) != FileStorageSettings.decode(fileConfig)
         if (changed && referenced(fileConfig.id)) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_IN_USE)
-        storage.operator(fileConfig)
-        if (fileConfig.master == 1 && (changed || current.master != 1)) storage.probe(fileConfig)
-        if (fileConfig.master == 1) clearMaster()
-        FileConfigTable.update(fileConfig)
+        if (changed && current.master == 1) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_MASTER_EDIT)
+        FileConfigTable.update(fileConfig.copy(
+            master = current.master,
+            status = current.status,
+            testPassed = if (changed) null else current.testPassed,
+        ))
         log.info("Updated file config with id: ${fileConfig.id}")
     }
 
-    suspend fun deleteFileConfig(id: Long) = deleteFileConfigs(listOf(id))
-
-    suspend fun deleteFileConfigs(ids: List<Long>) = storage.locked {
-        if (ids.isEmpty() || ids.size > 100 || ids.any { it <= 0 }) throw BadRequestException(InfraErrorCodes.INVALID_ARGUMENT)
-        ids.distinct().forEach { id ->
-            val current = FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
-            if (current.master == 1) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_IS_MASTER)
-            if (referenced(id)) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_IN_USE)
-            FileConfigTable.destroy(id)
-            log.info("Deleted file config with id: $id")
+    suspend fun updateFileConfigStatus(id: Long, status: Int) = storage.locked {
+        if (status !in 0..1) throw BadRequestException(InfraErrorCodes.INVALID_ARGUMENT)
+        val current = FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
+        if (status == 0 && current.master == 1) {
+            throw BadRequestException(InfraErrorCodes.FILE_CONFIG_MASTER_DISABLE)
         }
+        if (current.status != status) FileConfigTable.update(current.copy(status = status))
     }
 
     suspend fun getFileConfig(id: Long): FileConfig? {
@@ -121,13 +114,15 @@ class FileLogic(
         page: Int,
         size: Int,
         name: String? = null,
-        storage: Int? = null
+        storage: Int? = null,
+        status: Int? = null,
     ): PageResponse<FileConfig> {
         val result = FileConfigTable.query {
             where {
                 and(
                     whenNotBlank(name) { FileConfig::name like "%$it%" },
-                    whenPresent(storage) { FileConfig::storage eq it }
+                    whenPresent(storage) { FileConfig::storage eq it },
+                    whenPresent(status) { FileConfig::status eq it }
                 )
             }
             orderBy(FileConfig::id.desc())
@@ -136,17 +131,36 @@ class FileLogic(
             if (size > 0) ((result.total + size - 1) / size).toInt() else 0)
     }
 
-    suspend fun updateMaster(id: Long) = storage.locked {
-        val config = FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
-        storage.probe(config)
-        clearMaster()
-        FileConfigTable.update(config.copy(master = 1))
-        log.info("Set file config id: $id as master")
+    suspend fun updateMaster(id: Long) {
+        runTest(id, activate = true)
     }
 
-    suspend fun testFileConfig(id: Long): Boolean = storage.locked {
-        storage.probe(FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND))
-        true
+    suspend fun testFileConfig(id: Long): Boolean {
+        runTest(id, activate = false)
+        return true
+    }
+
+    private suspend fun runTest(id: Long, activate: Boolean) {
+        val rejection = storage.locked {
+            val config = FileConfigTable.get(id) ?: throw NotFoundException(InfraErrorCodes.FILE_CONFIG_NOT_FOUND)
+            if (activate && config.status != 1) throw BadRequestException(InfraErrorCodes.FILE_CONFIG_DISABLED)
+            val failure = try {
+                storage.probe(config)
+                null
+            } catch (failure: BadRequestException) {
+                failure
+            }
+            if (failure == null && activate) {
+                clearMaster()
+                FileConfigTable.update(config.copy(master = 1, testPassed = true))
+                log.info("Set file config id: $id as master")
+            } else {
+                FileConfigTable.update(config.copy(testPassed = failure == null))
+            }
+            failure
+        }
+        // Commit the test outcome before returning a rejected probe to the caller.
+        if (rejection != null) throw rejection
     }
 
     private suspend fun clearMaster() { db.execute("UPDATE infra_file_configs SET master = 0 WHERE master = 1") }

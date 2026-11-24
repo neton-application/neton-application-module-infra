@@ -16,6 +16,8 @@ data class FileConfigVO(
     val remark: String? = null,
     val config: FileStorageSettings? = null,
     val valid: Boolean = false,
+    val testPassed: Boolean? = null,
+    val status: Int = 1,
 )
 
 @Serializable

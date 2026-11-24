@@ -7,7 +7,14 @@ import kotlin.test.Test
 class ErrorMessageGuardTest {
     @Test
     fun businessErrorMessagesAreMachineCodes() {
-        ErrorMessageGuard.assertModuleClean(allowlist = emptySet())
+        ErrorMessageGuard.assertModuleClean(
+            allowlist = setOf(
+                // ProbeStep is private and all its values come from the InfraErrorCodes catalogue.
+                "kotlin/logic/FileStorageRuntime.kt#BadRequestException#step.denied",
+                "kotlin/logic/FileStorageRuntime.kt#BadRequestException#step.failed",
+                "kotlin/logic/FileStorageRuntime.kt#BadRequestException#step.timedOut",
+            ),
+        )
     }
 }
 

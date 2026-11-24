@@ -19,5 +19,7 @@ data class FileConfig(
     @CreatedAt
     val createdAt: Long? = null,
     @UpdatedAt
-    val updatedAt: Long? = null
+    val updatedAt: Long? = null,
+    val testPassed: Boolean? = null,
+    val status: Int = 1
 )

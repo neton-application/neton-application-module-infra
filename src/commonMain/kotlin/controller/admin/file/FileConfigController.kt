@@ -10,7 +10,6 @@ import neton.core.annotations.Controller
 import neton.core.annotations.Get
 import neton.core.annotations.Post
 import neton.core.annotations.Put
-import neton.core.annotations.Delete
 import neton.core.annotations.Permission
 import neton.core.annotations.Query
 import neton.core.annotations.PathVariable
@@ -55,17 +54,11 @@ class FileConfigController(
         fileLogic.updateFileConfig(fileConfig)
     }
 
-    @Delete("/delete/{id}")
-    @Permission("infra:file-config:delete")
-    suspend fun delete(@PathVariable id: Long) {
-        fileLogic.deleteFileConfig(id)
-    }
-
-    @Delete("/delete-list")
-    @Permission("infra:file-config:delete")
-    suspend fun deleteList(@Query ids: String) {
-        val values = ids.split(",").map { it.trim().toLongOrNull() ?: throw neton.core.http.BadRequestException(InfraErrorCodes.INVALID_ARGUMENT) }
-        fileLogic.deleteFileConfigs(values)
+    @Put("/update-status/{id}")
+    @Permission("infra:file-config:update")
+    @RateLimit(windowSeconds = 60, maxRequests = 20, scope = RateLimitScope.USER, message = InfraErrorCodes.FILE_STORAGE_RATE_LIMITED)
+    suspend fun updateStatus(@PathVariable id: Long, @Query status: Int) {
+        fileLogic.updateFileConfigStatus(id, status)
     }
 
     @Get("/get/{id}")
@@ -80,9 +73,10 @@ class FileConfigController(
         @Query pageNo: Int = 1,
         @Query pageSize: Int = 10,
         @Query name: String? = null,
-        @Query storage: Int? = null
+        @Query storage: Int? = null,
+        @Query status: Int? = null,
     ): dto.PageResponse<FileConfigVO> {
-        val result = fileLogic.pageFileConfig(pageNo, pageSize, name, storage)
+        val result = fileLogic.pageFileConfig(pageNo, pageSize, name, storage, status)
         return dto.PageResponse(result.list.map { it.toVO() }, result.total, result.page, result.size, result.totalPages)
     }
 
@@ -102,6 +96,6 @@ class FileConfigController(
 
     private fun FileConfig.toVO(): FileConfigVO {
         val safe = logic.FileStorageSettings.decode(this)
-        return FileConfigVO(id, name, storage, master, remark, safe, safe != null)
+        return FileConfigVO(id, name, storage, master, remark, safe, safe != null, testPassed, status)
     }
 }

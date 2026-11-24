@@ -165,5 +165,14 @@ tasks.register<Exec>("postgresContractTest") {
 // ============================================================
 extra["neton.migration.moduleId"] = "infra"
 extra["neton.migration.dialects"] = listOf("postgresql")
-extra["neton.migration.sqlSourceDir"] = file("sql")
+extra["neton.migration.sqlSourceDir"] = providers.gradleProperty("neton.infra.migrationSqlDir").orNull
+    ?.let { path ->
+        rootProject.file(path).also { directory ->
+            require(directory.resolve("postgresql").listFiles()?.any {
+                it.isFile && it.name.matches(Regex("""V\d+__[a-z0-9_]+\.sql"""))
+            } == true) {
+                "neton.infra.migrationSqlDir has no PostgreSQL migrations: ${directory.path}"
+            }
+        }
+    } ?: file("sql")
 apply(from = "../neton/scripts/embed-migration-resources.gradle.kts")

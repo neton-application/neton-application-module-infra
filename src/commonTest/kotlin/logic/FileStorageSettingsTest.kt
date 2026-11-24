@@ -29,4 +29,22 @@ class FileStorageSettingsTest {
         }
         assertFailsWith<BadRequestException> { FileStoragePolicy(null, emptySet()) { null }.resolve(0, FileStorageSettings(basePath = "photos")) }
     }
+
+    @Test fun acceptsInlineEndpointArrayFromModuleConfiguration() {
+        val config = neton.core.config.TomlParser.parse(
+            """
+            [file_storage]
+            allowed_endpoints = ["https://oss-ap-southeast-1.aliyuncs.com", "https://s3.example.com"]
+            """.trimIndent(),
+        )
+        val configured = neton.core.config.ConfigLoader.getConfigValue(config, "file_storage.allowed_endpoints")
+        val endpoints = FileStoragePolicy.configuredEndpoints(configured)
+        assertEquals(setOf("https://oss-ap-southeast-1.aliyuncs.com", s3.endpoint), endpoints)
+        val policy = FileStoragePolicy(null, endpoints) { "fixture" }
+        assertEquals("https://oss-ap-southeast-1.aliyuncs.com", policy.resolve(1, s3.copy(endpoint = "https://oss-ap-southeast-1.aliyuncs.com")).endpoint)
+        assertFailsWith<BadRequestException> { policy.resolve(1, s3.copy(endpoint = "https://other.example.com")) }
+        assertEquals(setOf(s3.endpoint), FileStoragePolicy.configuredEndpoints(listOf(s3.endpoint)))
+        assertEquals(emptySet(), FileStoragePolicy.configuredEndpoints(null))
+        assertFailsWith<IllegalArgumentException> { FileStoragePolicy.configuredEndpoints("[1]") }
+    }
 }
