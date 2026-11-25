@@ -11,6 +11,7 @@ import neton.database.api.DbContext
 import neton.logging.Logger
 import neton.core.http.BadRequestException
 import neton.core.http.NotFoundException
+import port.EXTERNAL_DIRECTORY_MIME
 import port.InfraErrorCodes
 
 class FileLogic(
@@ -22,6 +23,7 @@ class FileLogic(
     // --- FileInfo operations ---
 
     suspend fun createFileInfo(fileInfo: FileInfo): Long {
+        if (fileInfo.mimeType == EXTERNAL_DIRECTORY_MIME) throw BadRequestException(InfraErrorCodes.INVALID_ARGUMENT)
         val inserted = FileInfoTable.insert(fileInfo)
         log.info("Recorded file upload metadata with id: ${inserted.id}, name: ${fileInfo.name}")
         return inserted.id
